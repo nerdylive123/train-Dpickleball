@@ -3,7 +3,7 @@
 Minimal PPO training example using SharedObsUnityGymWrapper and CustomCNN.
 
 Requirements (install in your env):
-    pip install stable-baselines3 torch gymnasium opencv-python numpy
+    pip install stable-baselines3 torch gym opencv-python numpy
 
 Usage:
     python examples/train_simple_sb3.py --executable "E:/DpickleBallEnv/PickleBallFinal/Pickleball_Build_Training/dp.exe" --timesteps 10000
@@ -72,6 +72,7 @@ def main():
         learning_rate=2.5e-4,
         verbose=1,
         tensorboard_log=os.path.join(run_dir, "tb"),
+        device="cuda",
     )
 
     try:

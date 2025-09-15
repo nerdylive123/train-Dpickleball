@@ -5,8 +5,8 @@ Unity environment with shared observations.
 import numpy as np
 import cv2
 from collections import deque
-from gymnasium import Env, spaces
-from gymnasium.utils import seeding
+from gym import Env, spaces
+from gym.utils import seeding
 from mlagents_envs.envs.unity_parallel_env import UnityParallelEnv
 
 class SharedObsUnityGymWrapper(Env):
