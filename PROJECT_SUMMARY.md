@@ -47,7 +47,7 @@ train-Dpickleball/
 
 ### 2. Unity Environment Wrapper (`lib/unity_wrapper.py`)
 
-**Purpose**: Bridges Unity ML-Agents environment with Gymnasium interface for SB3 compatibility.
+**Purpose**: Bridges Unity ML-Agents environment with gym interface for SB3 compatibility.
 
 **Class**: `SharedObsUnityGymWrapper`
 
@@ -117,7 +117,7 @@ Output: Feature vector (default: 512 dimensions)
 # Initialize Unity environment with custom channels
 unity_env = UnityEnvironment(executable_path, side_channels=[...])
 
-# Wrap with Gymnasium interface
+# Wrap with gym interface
 env = SharedObsUnityGymWrapper(
     unity_env, 
     frame_stack=8, 
