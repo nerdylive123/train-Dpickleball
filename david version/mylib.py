@@ -8,23 +8,30 @@ import torch
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from mlagents_envs.envs.unity_parallel_env import UnityParallelEnv
+from gym.spaces import Tuple as GymTuple
 
 class SharedObsUnityGymWrapper(Env):
-    def __init__(self, unity_env, frame_stack=64, img_size=(168, 84), grayscale=True):
+    def __init__(self, unity_env, frame_stack=64, img_size=(168, 84), grayscale=True, left_agent=None):
         self.env = UnityParallelEnv(unity_env)
-
-        # left agent 0, right agent 1
-        self.agent = self.env.possible_agents[1]       # agent to be controlled
-        self.agent_other = self.env.possible_agents[0] # agent at opposite
+        self.agent = self.env.possible_agents[1]       # agent to be controlled (right)
+        self.agent_other = self.env.possible_agents[0] # agent at opposite (left)
         self.agent_obs = self.env.possible_agents[0]   # obs is only available in agent 0, always 0
         self.frame_stack = frame_stack
         self.img_size = img_size
         self.grayscale = grayscale
         self.frames = deque(maxlen=frame_stack)
         self._np_random = None
+        self.left_agent = left_agent  # Store the left agent instance
 
         # Observation space
-        base_obs = self.env.observation_spaces[self.agent_obs][0]
+        base_obs = self.env.observation_spaces.get(self.agent_obs, None)
+        if base_obs is None:
+            raise ValueError(f"Observation space for agent '{self.agent_obs}' not found. Available: {self.env.observation_spaces}")
+        # If it's a Tuple, use the first element (image)
+        if isinstance(base_obs, GymTuple):
+            base_obs = base_obs.spaces[0]
+        elif hasattr(base_obs, 'spaces') and isinstance(base_obs.spaces, (tuple, list)):
+            base_obs = base_obs.spaces[0]
         c, h, w = base_obs.shape
         self._transpose = (c == 3)
 
@@ -40,49 +47,46 @@ class SharedObsUnityGymWrapper(Env):
         self.action_space = self.env.action_spaces[self.agent]
 
     def _preprocess(self, obs):
-        # Transpose from (C, H, W) → (H, W, C)
         if self._transpose:
             obs = obs.transpose(1, 2, 0)
-
-        # Resize and grayscale
         obs = cv2.resize(obs, self.img_size, interpolation=cv2.INTER_AREA)
-
         if self.grayscale:
-            obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)  # (H, W)
-            obs = np.expand_dims(obs, axis=0)  # (1, H, W)
+            obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+            obs = np.expand_dims(obs, axis=0)
         else:
-            obs = obs.transpose(2, 0, 1)  # (C, H, W)
-
-        obs = obs.astype(np.float32) / 255.0  # Normalize to [0, 1]
+            obs = obs.transpose(2, 0, 1)
+        obs = obs.astype(np.float32) / 255.0
         return obs
 
     def reset(self, *, seed=None, options=None):
+        if self.left_agent is not None and hasattr(self.left_agent, 'reset'):
+            self.left_agent.reset()
         if seed is not None:
             self._np_random, seed = seeding.np_random(seed)
             if hasattr(self.env, "seed"):
                 self.env.seed(seed)
-
         obs_dict = self.env.reset()
         obs = self._preprocess(obs_dict[self.agent_obs]['observation'][0])
-
         for _ in range(self.frame_stack):
             self.frames.append(obs)
-
-        return np.concatenate(list(self.frames), axis=0), {}  # (stack, H, W)
+        return np.concatenate(list(self.frames), axis=0), {}
 
     def step(self, action):
-        actions = {self.agent: action}
+        # Get left agent's observation
+        obs_dict = self.env.observe() if hasattr(self.env, 'observe') else None
+        if obs_dict is None:
+            # If no observe method, step with dummy action to get obs_dict
+            dummy_actions = {self.agent: action, self.agent_other: self.env.action_spaces[self.agent_other].sample()}
+            obs_dict, _, _, _ = self.env.step(dummy_actions)
+        obs_left = obs_dict[self.agent_other]['observation'][0]
+        left_action = self.left_agent.act(obs_left) if self.left_agent is not None else self.env.action_spaces[self.agent_other].sample()
+        actions = {self.agent: action, self.agent_other: left_action}
         obs_dict, rewards, terminations, infos = self.env.step(actions)
-
         obs = self._preprocess(obs_dict[self.agent_obs]['observation'][0])
         self.frames.append(obs)
-
-        stacked_obs = np.concatenate(list(self.frames), axis=0)  # (stack, H, W)
-
-
+        stacked_obs = np.concatenate(list(self.frames), axis=0)
         if (rewards[self.agent] + rewards[self.agent_other]) > 0:
-            print ("Rewards: ", rewards[self.agent], rewards[self.agent_other])
-
+            print("Rewards: ", rewards[self.agent], rewards[self.agent_other])
         return stacked_obs, rewards[self.agent] - rewards[self.agent_other], terminations[self.agent], False, infos[self.agent]
 
     def render(self):
