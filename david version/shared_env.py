@@ -1,8 +1,12 @@
+from typing import Optional, List
+
+from mlagents_envs.side_channel import SideChannel
+
 from mylib import SharedObsUnityGymWrapper
 from mlagents_envs.environment import UnityEnvironment
 from left_agent import LeftAgent
 
-def create_env(left_agent="predefined", worker_id=None):
+def create_env(left_agent="predefined", side_channels: Optional[List[SideChannel]] = None, worker_id=None):
     import random
     ENV_PATH = r"E:\DpickleBallEnv\PickleBallFinal\Pickleball_Build_Training\dp.exe"
 
@@ -11,7 +15,7 @@ def create_env(left_agent="predefined", worker_id=None):
         worker_id = random.randint(1, 100)
 
     # Initialize the Unity Environment
-    unity_env = UnityEnvironment(ENV_PATH, worker_id=worker_id, no_graphics=False)
+    unity_env = UnityEnvironment(ENV_PATH, worker_id=worker_id, no_graphics=False, side_channels=side_channels or [])
 
     if left_agent == "predefined":
         left_agent_instance = LeftAgent()

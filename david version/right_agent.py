@@ -17,16 +17,16 @@ def train_right_agent():
     channel.send_data(serve=212, p1=0, p2=0)
 
     # 2. Initialize the Unity Environment with the side channels
-    unity_env = UnityEnvironment(
-        ENV_PATH,
-        worker_id=1,
-        no_graphics=False,
-        side_channels=[string_channel, channel]
-    )
+    # unity_env = UnityEnvironment(
+    #     ENV_PATH,
+    #     worker_id=1,
+    #     no_graphics=False,
+    #     side_channels=[string_channel, channel]
+    # )
 
     # 3. Wrap with SharedObsUnityGymWrapper (frame-stack + grayscale preprocessing)
     # env = SharedObsUnityGymWrapper(unity_env, frame_stack=4, grayscale=True)
-    env = create_env()
+    env = create_env(side_channels=[string_channel, channel])
 
     # 4. Use the refactored custom CNN features extractor
     policy_kwargs = dict(

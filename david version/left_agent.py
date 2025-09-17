@@ -5,8 +5,13 @@ class LeftAgent:
         self.time_elapsed = 0
 
     def act(self, observation):
-        # Always return a valid action for MultiDiscrete([3 3 3])
-        return np.array([0,1,0])
+        # Cycle between left and right movements each 1 time steps
+        if self.time_elapsed % 2 == 0:
+            action = np.array([0, 1, 0])
+        else:
+            action = np.array([0, 2, 0])
+        self.time_elapsed += 1
+        return action
 
     def reset(self):
         self.time_elapsed = 0
