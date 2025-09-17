@@ -5,10 +5,10 @@ from mlagents_envs.environment import UnityEnvironment
 
 from mylib import SharedObsUnityGymWrapper
 from custom_cnn import CustomCNN
-
+from shared_env import create_env
 
 def train_right_agent():
-    ENV_PATH = r"C:\Users\David\DPICKLEBALL COMPETITIONS\PickleBallFinal\Pickleball_Build_Training\dp.exe"
+    ENV_PATH = r"E:\DpickleBallEnv\PickleBallFinal\Pickleball_Build_Training\dp.exe"
     MODEL_SAVE_PATH = "right_agent_model"
 
     # 1. Create the side channels
@@ -25,7 +25,8 @@ def train_right_agent():
     )
 
     # 3. Wrap with SharedObsUnityGymWrapper (frame-stack + grayscale preprocessing)
-    env = SharedObsUnityGymWrapper(unity_env, frame_stack=4, grayscale=True)
+    # env = SharedObsUnityGymWrapper(unity_env, frame_stack=4, grayscale=True)
+    env = create_env()
 
     # 4. Use the refactored custom CNN features extractor
     policy_kwargs = dict(

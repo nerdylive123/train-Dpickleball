@@ -6,7 +6,7 @@ class LeftAgent:
 
     def act(self, observation):
         # Always return a valid action for MultiDiscrete([3 3 3])
-        return np.array([1, 1, 1])
+        return np.array([0,1,0])
 
     def reset(self):
         self.time_elapsed = 0
