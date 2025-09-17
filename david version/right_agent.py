@@ -7,8 +7,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
 
-from callback.inferenceTime import InferenceTimerCallback
-from custom_cnn import CustomCNN
+
+from mylib import CustomCNN
 from shared_env import create_env
 
 
@@ -20,9 +20,7 @@ class SimpleEpisodeTracker(BaseCallback):
     def __init__(self, check_freq=10, log_dir='./training_logs/', verbose=1):
         super().__init__(verbose)
         self.check_freq = check_freq
-        # Normalize log_dir to absolute path (anchor to script directory if relative)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.log_dir = log_dir if os.path.isabs(log_dir) else os.path.abspath(os.path.join(script_dir, log_dir))
+        self.log_dir = log_dir
 
         # Episode tracking
         self.episode_rewards = []
@@ -34,22 +32,16 @@ class SimpleEpisodeTracker(BaseCallback):
         self.reward_window = deque(maxlen=check_freq)
 
         # Create log directory
-        os.makedirs(self.log_dir, exist_ok=True)
-        self.log_file = os.path.join(self.log_dir, 'training_progress.txt')
-        self.step_log_file = os.path.join(self.log_dir, 'training_steps.txt')
+        os.makedirs(log_dir, exist_ok=True)
+        self.log_file = os.path.join(log_dir, 'training_progress.txt')
 
         # Initialize log file with header
         with open(self.log_file, 'w') as f:
             f.write("Episode | Episode Reward | Mean Reward (last 10) | Timesteps\n")
             f.write("-" * 60 + "\n")
-        # Initialize step log file with header
-        with open(self.step_log_file, 'w') as f:
-            f.write("Step | Reward | Episode Total | Timesteps\n")
-            f.write("-" * 40 + "\n")
 
-        abs_path = os.path.abspath(self.log_file)
         print(f"Episode tracking enabled - reporting every episode and summary every {check_freq} episodes")
-        print(f"Progress log: {self.log_file} ({abs_path})")
+        print(f"Progress log: {self.log_file}")
 
     def _on_step(self) -> bool:
         self.step_count += 1
@@ -70,29 +62,10 @@ class SimpleEpisodeTracker(BaseCallback):
 
         self.current_episode_reward += reward
 
-        # Always append a step line to step log for real-time monitoring
-        try:
-            with open(self.step_log_file, 'a') as f:
-                f.write(f"{self.step_count:>4} | {reward:>7.3f} | {self.current_episode_reward:>13.3f} | {self.num_timesteps:>9d}\n")
-                f.flush()
-                os.fsync(f.fileno())
-        except Exception as e:
-            if self.verbose:
-                print(f"[StepLogWriteError] {e}")
-
-        # Print step rewards for debugging (and mirror to main log only when significant)
+        # Print step rewards for debugging
         if abs(reward) > 0.01:
-            line = f"Step {self.step_count}: Reward = {reward:.3f}, Episode Total = {self.current_episode_reward:.3f}, Timesteps = {self.num_timesteps}"
-            print(line)
-            # Write to progress log for significant events
-            try:
-                with open(self.log_file, 'a') as f:
-                    f.write(f"STEP | {self.step_count:>7} | {reward:>7.3f} | {self.current_episode_reward:>13.3f} | {self.num_timesteps:>9d}\n")
-                    f.flush()
-                    os.fsync(f.fileno())
-            except Exception as e:
-                if self.verbose:
-                    print(f"[LogWriteError] {e}")
+            print(f"Step {self.step_count}: Reward = {reward:.3f}, Episode Total = {self.current_episode_reward:.3f}")
+
         # Check if episode is done
         done = False
         try:
@@ -123,8 +96,6 @@ class SimpleEpisodeTracker(BaseCallback):
             # Save to log file
             with open(self.log_file, 'a') as f:
                 f.write(f"{self.episode_count:>7} | {self.current_episode_reward:>14.3f} | {current_mean:>18.3f} | {self.num_timesteps:>9d}\n")
-                f.flush()
-                os.fsync(f.fileno())
 
             # Report detailed progress every N episodes
             if self.episode_count % self.check_freq == 0:
@@ -179,17 +150,16 @@ class SimpleEpisodeTracker(BaseCallback):
 
     def _save_detailed_data(self):
         """Save all episode data to JSON file"""
-        window_list = list(self.reward_window)
         data = {
             'episode_count': self.episode_count,
             'total_timesteps': int(self.num_timesteps),
             'all_episode_rewards': self.episode_rewards,
             'recent_stats': {
                 'episodes': f"{self.episode_count - self.check_freq + 1}-{self.episode_count}",
-                'mean_reward': float(np.mean(window_list)) if window_list else 0.0,
-                'std_reward': float(np.std(window_list)) if window_list else 0.0,
-                'min_reward': float(np.min(window_list)) if window_list else 0.0,
-                'max_reward': float(np.max(window_list)) if window_list else 0.0
+                'mean_reward': float(np.mean(self.reward_window)),
+                'std_reward': float(np.std(self.reward_window)),
+                'min_reward': float(np.min(self.reward_window)),
+                'max_reward': float(np.max(self.reward_window))
             }
         }
 
@@ -199,14 +169,8 @@ class SimpleEpisodeTracker(BaseCallback):
 
     def get_summary(self):
         """Get training summary"""
-        # Always return a consistent dict shape
         if not self.episode_rewards:
-            return {
-                'total_episodes': 0,
-                'overall_mean_reward': 0.0,
-                'recent_mean_reward': 0.0,
-                'improvement': 0.0,
-            }
+            return "No episodes completed yet"
 
         total_episodes = len(self.episode_rewards)
         mean_reward = np.mean(self.episode_rewards)
@@ -227,9 +191,8 @@ class SimpleEpisodeTracker(BaseCallback):
 def train_right_agent():
     MODEL_SAVE_PATH = "right_agent_model"
 
-    # Create log directory anchored to this script
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    log_dir = os.path.join(base_dir, "training_logs")
+    # Create log directory
+    log_dir = "./training_logs/"
     os.makedirs(log_dir, exist_ok=True)
 
     # 1. Create the side channels
@@ -237,19 +200,14 @@ def train_right_agent():
     channel = CustomDataChannel()
     channel.send_data(serve=212, p1=0, p2=0)
 
-    # 2. Initialize the Unity Environment with the side channels
-    # unity_env = UnityEnvironment(
-    #     ENV_PATH,
-    #     worker_id=1,
-    #     no_graphics=False,
-    #     side_channels=[string_channel, channel]
-    # )
+    # 2. Create environment with proper side channels parameter
+    env = create_env(
+        left_agent="predefined",  # Use the predefined left agent
+        side_channels=[string_channel, channel],
+        no_graphics=False  # Show the Unity window
+    )
 
-    # 3. Wrap with SharedObsUnityGymWrapper (frame-stack + grayscale preprocessing)
-    # env = SharedObsUnityGymWrapper(unity_env, frame_stack=4, grayscale=True)
-    env = create_env(side_channels=[string_channel, channel])
-
-    # 4. Use the refactored custom CNN features extractor
+    # 3. Use the custom CNN features extractor
     policy_kwargs = dict(
         features_extractor_class=CustomCNN,
         features_extractor_kwargs=dict(features_dim=512),
@@ -267,7 +225,7 @@ def train_right_agent():
         gamma=0.99,  # Standard discount factor
         gae_lambda=0.95,
         clip_range=0.1,  # Reduced clipping for more stable updates
-        ent_coef=0.005,  # Reduced entropy for less random actions
+        ent_coef=0.015,  # Entropy coefficient for exploration
         vf_coef=0.5,  # Value function coefficient
         max_grad_norm=0.5,  # Gradient clipping
         learning_rate=2.5e-4,  # Standard learning rate
@@ -298,8 +256,8 @@ def train_right_agent():
         # Train with episode tracking and progress callback
         model.learn(
             total_timesteps=500_000,  # Reduced for faster testing
-            callback=[episode_tracker, InferenceTimerCallback()],
-            progress_bar=True  # Show the progress bar
+            callback=episode_tracker,
+            progress_bar=True  # Show progress bar
         )
 
         # Save model
