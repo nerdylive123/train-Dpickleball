@@ -3,15 +3,52 @@ import numpy as np
 class LeftAgent:
     def __init__(self):
         self.time_elapsed = 0
+        self.__step = 0
+
+    def pattern_1(self):
+        # Cycle between left and right movements each 5 time steps
+        if (self.__step // 12) % 2 == 0:
+            action = np.array([0, 2, 2])  # Move left
+            self.__step += 2
+        else:
+            action = np.array([0, 1, 0])
+            self.__step += 1
+        return action
+
+    def pattern_simple(self):
+        self.__step += 1
+        return [0, 1, 0]
+
+    def pattern_simple2(self):
+        # move left [0,2,0] for 10 steps then next should be stop [0,0,0] for 60 steps then
+        # move right [0,1,0] for 10 steps then stop [0,0,0] for 50 steps
+        cycle_length = 100
+
+        step_in_cycle = self.__step % cycle_length
+        self.__step += 1
+
+        if step_in_cycle < 10:
+            action = np.array([0, 2, 0])
+        elif step_in_cycle < 70:
+            action = np.array([0, 0, 0])
+        elif step_in_cycle < 80:
+            action = np.array([0, 1, 0])
+        else:
+            action = np.array([0, 0, 0])
+
+
+        print(f"Left Agent Step: {self.__step}, Action: {action}")
+
+        return action
+
+    def pattern_still(self):
+        self.__step += 1
+        return np.array([0, 0, 0])
+
 
     def act(self, observation):
-        # Cycle between left and right movements each 1 time steps
-        # if self.time_elapsed % 2 == 0:
-        #     action = [0, 1, 0] # right
-        # else:
-        #     action = [0, 2, 0] #move left
-        # self.time_elapsed += 1
-        return [0,1,0]
+        return self.pattern_simple2()
 
     def reset(self):
         self.time_elapsed = 0
+        self.__step = 0

@@ -8,7 +8,6 @@ from custom_cnn import CustomCNN
 from shared_env import create_env
 
 def train_right_agent():
-    ENV_PATH = r"E:\DpickleBallEnv\PickleBallFinal\Pickleball_Build_Training\dp.exe"
     MODEL_SAVE_PATH = "right_agent_model"
 
     # 1. Create the side channels
@@ -58,10 +57,6 @@ def train_right_agent():
     finally:
         try:
             env.close()
-        except Exception:
-            pass
-        try:
-            unity_env.close()
         except Exception:
             pass
 
