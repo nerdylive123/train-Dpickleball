@@ -6,7 +6,7 @@ import torch
 from stable_baselines3.common.callbacks import BaseCallback
 
 class InferenceTimerCallback(BaseCallback, ABC):
-    def __init__(self, target_ms=None, window=2000, verbose=1):
+    def __init__(self, target_ms=10, window=2000, verbose=1):
         super().__init__(verbose)
         self.target_ms = target_ms
         self.window = window
