@@ -20,7 +20,9 @@ class SimpleEpisodeTracker(BaseCallback):
     def __init__(self, check_freq=10, log_dir='./training_logs/', verbose=1):
         super().__init__(verbose)
         self.check_freq = check_freq
-        self.log_dir = log_dir
+        # Normalize log_dir to absolute path (anchor to script directory if relative)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.log_dir = log_dir if os.path.isabs(log_dir) else os.path.abspath(os.path.join(script_dir, log_dir))
 
         # Episode tracking
         self.episode_rewards = []
@@ -32,16 +34,22 @@ class SimpleEpisodeTracker(BaseCallback):
         self.reward_window = deque(maxlen=check_freq)
 
         # Create log directory
-        os.makedirs(log_dir, exist_ok=True)
-        self.log_file = os.path.join(log_dir, 'training_progress.txt')
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.log_file = os.path.join(self.log_dir, 'training_progress.txt')
+        self.step_log_file = os.path.join(self.log_dir, 'training_steps.txt')
 
         # Initialize log file with header
         with open(self.log_file, 'w') as f:
             f.write("Episode | Episode Reward | Mean Reward (last 10) | Timesteps\n")
             f.write("-" * 60 + "\n")
+        # Initialize step log file with header
+        with open(self.step_log_file, 'w') as f:
+            f.write("Step | Reward | Episode Total | Timesteps\n")
+            f.write("-" * 40 + "\n")
 
+        abs_path = os.path.abspath(self.log_file)
         print(f"Episode tracking enabled - reporting every episode and summary every {check_freq} episodes")
-        print(f"Progress log: {self.log_file}")
+        print(f"Progress log: {self.log_file} ({abs_path})")
 
     def _on_step(self) -> bool:
         self.step_count += 1
@@ -62,10 +70,29 @@ class SimpleEpisodeTracker(BaseCallback):
 
         self.current_episode_reward += reward
 
-        # Print step rewards for debugging
-        if abs(reward) > 0.01:
-            print(f"Step {self.step_count}: Reward = {reward:.3f}, Episode Total = {self.current_episode_reward:.3f}")
+        # Always append a step line to step log for real-time monitoring
+        try:
+            with open(self.step_log_file, 'a') as f:
+                f.write(f"{self.step_count:>4} | {reward:>7.3f} | {self.current_episode_reward:>13.3f} | {self.num_timesteps:>9d}\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            if self.verbose:
+                print(f"[StepLogWriteError] {e}")
 
+        # Print step rewards for debugging (and mirror to main log only when significant)
+        if abs(reward) > 0.01:
+            line = f"Step {self.step_count}: Reward = {reward:.3f}, Episode Total = {self.current_episode_reward:.3f}, Timesteps = {self.num_timesteps}"
+            print(line)
+            # Write to progress log for significant events
+            try:
+                with open(self.log_file, 'a') as f:
+                    f.write(f"STEP | {self.step_count:>7} | {reward:>7.3f} | {self.current_episode_reward:>13.3f} | {self.num_timesteps:>9d}\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+            except Exception as e:
+                if self.verbose:
+                    print(f"[LogWriteError] {e}")
         # Check if episode is done
         done = False
         try:
@@ -96,6 +123,8 @@ class SimpleEpisodeTracker(BaseCallback):
             # Save to log file
             with open(self.log_file, 'a') as f:
                 f.write(f"{self.episode_count:>7} | {self.current_episode_reward:>14.3f} | {current_mean:>18.3f} | {self.num_timesteps:>9d}\n")
+                f.flush()
+                os.fsync(f.fileno())
 
             # Report detailed progress every N episodes
             if self.episode_count % self.check_freq == 0:
@@ -198,8 +227,9 @@ class SimpleEpisodeTracker(BaseCallback):
 def train_right_agent():
     MODEL_SAVE_PATH = "right_agent_model"
 
-    # Create log directory
-    log_dir = "./training_logs/"
+    # Create log directory anchored to this script
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(base_dir, "training_logs")
     os.makedirs(log_dir, exist_ok=True)
 
     # 1. Create the side channels
