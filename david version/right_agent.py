@@ -204,7 +204,7 @@ def train_right_agent():
     env = create_env(
         left_agent="predefined",  # Use the predefined left agent
         side_channels=[string_channel, channel],
-        no_graphics=True  # Show the Unity window
+        no_graphics=False  # Show the Unity window
     )
 
     # 3. Use the custom CNN features extractor
@@ -215,24 +215,18 @@ def train_right_agent():
 
     # 4. Improved PPO hyperparameters for better learning
     model = PPO(
-        "CnnPolicy",
-        env,
+        env=env,
+        policy="CnnPolicy",
         policy_kwargs=policy_kwargs,
-        verbose=2,  # More verbose output
-        n_steps=2048,  # Increased for more stable updates
-        batch_size=64,  # Increased batch size
-        n_epochs=4,  # Reduced epochs to prevent overfitting
-        gamma=0.99,  # Standard discount factor
+        verbose=1,
+        n_steps=1024, #modifies from 1024
+        batch_size=32, #modified from 64
+        n_epochs=10,
+        gamma=0.995,
         gae_lambda=0.95,
-        clip_range=0.1,  # Reduced clipping for more stable updates
-        ent_coef=0.015,  # Entropy coefficient for exploration
-        vf_coef=0.5,  # Value function coefficient
-        max_grad_norm=0.5,  # Gradient clipping
-        learning_rate=2.5e-4,  # Standard learning rate
-        use_sde=False,  # Disable stochastic domain randomization
-        sde_sample_freq=-1,
-        normalize_advantage=True,  # Normalize advantages
-        device="cuda" if torch.cuda.is_available() else "cpu"
+        clip_range=0.2,
+        ent_coef=0.01,
+        learning_rate=3e-4,
     )
 
     # 5. Create episode tracker with more frequent reporting
