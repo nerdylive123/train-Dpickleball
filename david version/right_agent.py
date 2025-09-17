@@ -6,10 +6,9 @@ from collections import deque
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
-from mlagents_envs.environment import UnityEnvironment
 
-from mylib import SharedObsUnityGymWrapper
-from mylib import CustomCNN
+from callback.inferenceTime import InferenceTimerCallback
+from custom_cnn import CustomCNN
 from shared_env import create_env
 
 
@@ -151,16 +150,17 @@ class SimpleEpisodeTracker(BaseCallback):
 
     def _save_detailed_data(self):
         """Save all episode data to JSON file"""
+        window_list = list(self.reward_window)
         data = {
             'episode_count': self.episode_count,
             'total_timesteps': int(self.num_timesteps),
             'all_episode_rewards': self.episode_rewards,
             'recent_stats': {
                 'episodes': f"{self.episode_count - self.check_freq + 1}-{self.episode_count}",
-                'mean_reward': float(np.mean(self.reward_window)),
-                'std_reward': float(np.std(self.reward_window)),
-                'min_reward': float(np.min(self.reward_window)),
-                'max_reward': float(np.max(self.reward_window))
+                'mean_reward': float(np.mean(window_list)) if window_list else 0.0,
+                'std_reward': float(np.std(window_list)) if window_list else 0.0,
+                'min_reward': float(np.min(window_list)) if window_list else 0.0,
+                'max_reward': float(np.max(window_list)) if window_list else 0.0
             }
         }
 
@@ -170,8 +170,14 @@ class SimpleEpisodeTracker(BaseCallback):
 
     def get_summary(self):
         """Get training summary"""
+        # Always return a consistent dict shape
         if not self.episode_rewards:
-            return "No episodes completed yet"
+            return {
+                'total_episodes': 0,
+                'overall_mean_reward': 0.0,
+                'recent_mean_reward': 0.0,
+                'improvement': 0.0,
+            }
 
         total_episodes = len(self.episode_rewards)
         mean_reward = np.mean(self.episode_rewards)
@@ -201,14 +207,19 @@ def train_right_agent():
     channel = CustomDataChannel()
     channel.send_data(serve=212, p1=0, p2=0)
 
-    # 2. Create environment with proper side channels parameter
-    env = create_env(
-        left_agent="predefined",  # Use the predefined left agent
-        side_channels=[string_channel, channel],
-        no_graphics=False  # Show the Unity window
-    )
+    # 2. Initialize the Unity Environment with the side channels
+    # unity_env = UnityEnvironment(
+    #     ENV_PATH,
+    #     worker_id=1,
+    #     no_graphics=False,
+    #     side_channels=[string_channel, channel]
+    # )
 
-    # 3. Use the custom CNN features extractor
+    # 3. Wrap with SharedObsUnityGymWrapper (frame-stack + grayscale preprocessing)
+    # env = SharedObsUnityGymWrapper(unity_env, frame_stack=4, grayscale=True)
+    env = create_env(side_channels=[string_channel, channel])
+
+    # 4. Use the refactored custom CNN features extractor
     policy_kwargs = dict(
         features_extractor_class=CustomCNN,
         features_extractor_kwargs=dict(features_dim=512),
@@ -257,8 +268,8 @@ def train_right_agent():
         # Train with episode tracking and progress callback
         model.learn(
             total_timesteps=500_000,  # Reduced for faster testing
-            callback=episode_tracker,
-            progress_bar=True  # Show progress bar
+            callback=[episode_tracker, InferenceTimerCallback()],
+            progress_bar=True  # Show the progress bar
         )
 
         # Save model
