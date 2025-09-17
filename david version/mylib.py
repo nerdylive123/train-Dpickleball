@@ -22,16 +22,18 @@ class SharedObsUnityGymWrapper(Env):
         self.frames = deque(maxlen=frame_stack)
         self._np_random = None
         self.left_agent = left_agent  # Store the left agent instance
+        self._last_obs = None  # store last observations to compute opponent action
 
-        # Observation space
-        base_obs = self.env.observation_spaces.get(self.agent_obs, None)
-        if base_obs is None:
+        # Define observation space robustly (handle Tuple spaces)
+        base_obs_space = self.env.observation_spaces.get(self.agent_obs, None)
+        if base_obs_space is None:
             raise ValueError(f"Observation space for agent '{self.agent_obs}' not found. Available: {self.env.observation_spaces}")
-        # If it's a Tuple, use the first element (image)
-        if isinstance(base_obs, GymTuple):
-            base_obs = base_obs.spaces[0]
-        elif hasattr(base_obs, 'spaces') and isinstance(base_obs.spaces, (tuple, list)):
-            base_obs = base_obs.spaces[0]
+        if isinstance(base_obs_space, GymTuple):
+            base_obs = base_obs_space.spaces[0]
+        elif hasattr(base_obs_space, 'spaces') and isinstance(base_obs_space.spaces, (tuple, list)):
+            base_obs = base_obs_space.spaces[0]
+        else:
+            base_obs = base_obs_space
         c, h, w = base_obs.shape
         self._transpose = (c == 3)
 
@@ -58,6 +60,15 @@ class SharedObsUnityGymWrapper(Env):
         obs = obs.astype(np.float32) / 255.0
         return obs
 
+    def _current_obs_dict(self):
+        """Try to fetch the latest observations without stepping, if supported."""
+        if hasattr(self.env, 'observe'):
+            try:
+                return self.env.observe()
+            except Exception:
+                return None
+        return None
+
     def reset(self, *, seed=None, options=None):
         if self.left_agent is not None and hasattr(self.left_agent, 'reset'):
             self.left_agent.reset()
@@ -66,22 +77,29 @@ class SharedObsUnityGymWrapper(Env):
             if hasattr(self.env, "seed"):
                 self.env.seed(seed)
         obs_dict = self.env.reset()
+        self._last_obs = obs_dict
         obs = self._preprocess(obs_dict[self.agent_obs]['observation'][0])
         for _ in range(self.frame_stack):
             self.frames.append(obs)
         return np.concatenate(list(self.frames), axis=0), {}
 
     def step(self, action):
-        # Get left agent's observation
-        obs_dict = self.env.observe() if hasattr(self.env, 'observe') else None
-        if obs_dict is None:
-            # If no observe method, step with dummy action to get obs_dict
-            dummy_actions = {self.agent: action, self.agent_other: self.env.action_spaces[self.agent_other].sample()}
-            obs_dict, _, _, _ = self.env.step(dummy_actions)
-        obs_left = obs_dict[self.agent_other]['observation'][0]
-        left_action = self.left_agent.act(obs_left) if self.left_agent is not None else self.env.action_spaces[self.agent_other].sample()
+        # Determine left agent action using most recent observation
+        obs_source = None
+        if isinstance(self._last_obs, dict) and self.agent_other in self._last_obs:
+            obs_source = self._last_obs
+        if obs_source is None:
+            obs_source = self._current_obs_dict()
+        if obs_source is not None:
+            obs_left = obs_source[self.agent_other]['observation'][0]
+            left_action = self.left_agent.act(obs_left) if self.left_agent is not None else self.env.action_spaces[self.agent_other].sample()
+        else:
+            # Fallback: sample if we cannot retrieve observation for left agent
+            left_action = self.env.action_spaces[self.agent_other].sample()
+
         actions = {self.agent: action, self.agent_other: left_action}
         obs_dict, rewards, terminations, infos = self.env.step(actions)
+        self._last_obs = obs_dict
         obs = self._preprocess(obs_dict[self.agent_obs]['observation'][0])
         self.frames.append(obs)
         stacked_obs = np.concatenate(list(self.frames), axis=0)
