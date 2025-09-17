@@ -7,7 +7,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
 
-
+from callback.inferenceTime import InferenceTimerCallback
 from mylib import CustomCNN
 from shared_env import create_env
 
@@ -204,7 +204,7 @@ def train_right_agent():
     env = create_env(
         left_agent="predefined",  # Use the predefined left agent
         side_channels=[string_channel, channel],
-        no_graphics=False  # Show the Unity window
+        no_graphics=True  # Show the Unity window
     )
 
     # 3. Use the custom CNN features extractor
@@ -242,6 +242,8 @@ def train_right_agent():
         verbose=1
     )
 
+    infTime = InferenceTimerCallback()
+
     print(f"Starting training on device: {model.device}")
     print("Improved hyperparameters for better learning:")
     print(f"- n_steps: {model.n_steps}")
@@ -256,7 +258,7 @@ def train_right_agent():
         # Train with episode tracking and progress callback
         model.learn(
             total_timesteps=500_000,  # Reduced for faster testing
-            callback=episode_tracker,
+            callback=[episode_tracker, infTime],
             progress_bar=True  # Show progress bar
         )
 

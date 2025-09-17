@@ -5,10 +5,22 @@ from mlagents_envs.side_channel import SideChannel
 from mylib import SharedObsUnityGymWrapper
 from mlagents_envs.environment import UnityEnvironment
 from left_agent import LeftAgent
+import random
+import os
 
-def create_env(left_agent="predefined", side_channels: Optional[List[SideChannel]] = None, worker_id=None):
-    import random
-    import os
+def create_env(left_agent="predefined", side_channels: Optional[List[SideChannel]] = None, worker_id=None,
+               no_graphics=True):
+    """
+    Create and return a SharedObsUnityGymWrapper environment.
+    Args:
+        left_agent (str): Type of left agent to use. Default is "predefined".
+        side_channels (List[SideChannel], optional): List of side channels for Unity environment communication.
+        worker_id (int, optional): Worker ID for Unity environment to avoid port conflicts. If None, a random ID will be assigned.
+        no_graphics (bool): Whether to run the Unity environment in no-graphics mode. Default is True.
+    Returns:
+        SharedObsUnityGymWrapper: The wrapped Unity environment.
+    """
+
 
     ENV_PATHS = [
         r"E:\DpickleBallEnv\PickleBallFinal\Pickleball_Build_Training\dp.exe",
@@ -23,7 +35,7 @@ def create_env(left_agent="predefined", side_channels: Optional[List[SideChannel
         worker_id = random.randint(1, 100)
 
     # Initialize the Unity Environment
-    unity_env = UnityEnvironment(ENV_PATH, worker_id=worker_id, no_graphics=True, side_channels=side_channels or [])
+    unity_env = UnityEnvironment(ENV_PATH, worker_id=worker_id, no_graphics=no_graphics, side_channels=side_channels or [])
 
     if left_agent == "predefined":
         left_agent_instance = LeftAgent()
