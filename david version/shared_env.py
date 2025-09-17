@@ -23,12 +23,12 @@ def create_env(left_agent="predefined", side_channels: Optional[List[SideChannel
         worker_id = random.randint(1, 100)
 
     # Initialize the Unity Environment
-    unity_env = UnityEnvironment(ENV_PATH, worker_id=worker_id, no_graphics=False, side_channels=side_channels or [])
+    unity_env = UnityEnvironment(ENV_PATH, worker_id=worker_id, no_graphics=True, side_channels=side_channels or [])
 
     if left_agent == "predefined":
         left_agent_instance = LeftAgent()
     else:
         left_agent_instance = None  # Placeholder for other left agent logic
 
-    env = SharedObsUnityGymWrapper(unity_env, frame_stack=4, grayscale=True, left_agent=left_agent_instance)
+    env = SharedObsUnityGymWrapper(unity_env, left_agent=left_agent_instance)
     return env
