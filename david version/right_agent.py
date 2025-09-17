@@ -1,8 +1,11 @@
 import torch
+from stable_baselines3 import PPO
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
 from mlagents_envs.environment import UnityEnvironment
-from mylib import SharedObsUnityGymWrapper, CustomCNN
-from stable_baselines3 import PPO
+
+from mylib import SharedObsUnityGymWrapper
+from custom_cnn import CustomCNN
+
 
 def train_right_agent():
     ENV_PATH = r"C:\Users\David\DPICKLEBALL COMPETITIONS\PickleBallFinal\Pickleball_Build_Training\dp.exe"
@@ -21,8 +24,10 @@ def train_right_agent():
         side_channels=[string_channel, channel]
     )
 
+    # 3. Wrap with SharedObsUnityGymWrapper (frame-stack + grayscale preprocessing)
     env = SharedObsUnityGymWrapper(unity_env, frame_stack=4, grayscale=True)
 
+    # 4. Use the refactored custom CNN features extractor
     policy_kwargs = dict(
         features_extractor_class=CustomCNN,
         features_extractor_kwargs=dict(features_dim=512),
@@ -45,9 +50,20 @@ def train_right_agent():
     )
 
     print(f"Starting training on device: {model.device}")
-    model.learn(total_timesteps=1_000_000)
-    model.save(MODEL_SAVE_PATH)
-    print("Right agent training complete.")
+    try:
+        model.learn(total_timesteps=1_000_000)
+        model.save(MODEL_SAVE_PATH)
+        print("Right agent training complete.")
+    finally:
+        try:
+            env.close()
+        except Exception:
+            pass
+        try:
+            unity_env.close()
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     train_right_agent()
