@@ -8,7 +8,15 @@ from left_agent import LeftAgent
 
 def create_env(left_agent="predefined", side_channels: Optional[List[SideChannel]] = None, worker_id=None):
     import random
-    ENV_PATH = r"E:\DpickleBallEnv\PickleBallFinal\Pickleball_Build_Training\dp.exe"
+    import os
+
+    ENV_PATHS = [
+        r"E:\DpickleBallEnv\PickleBallFinal\Pickleball_Build_Training\dp.exe",
+        r"C:\Users\David\DPICKLEBALL COMPETITIONS\PickleBallFinal\Pickleball_Build_Training\dp.exe",
+        r"C:\Users\Vanessa\Downloads\dpickleball\Pickleball_Build_Training\dp.exe"
+    ]
+
+    ENV_PATH = next((p for p in ENV_PATHS if os.path.exists(p)), ENV_PATHS[0])
 
     # Use a random worker_id if not specified to avoid conflicts
     if worker_id is None:

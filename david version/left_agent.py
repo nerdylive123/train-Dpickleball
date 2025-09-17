@@ -35,10 +35,6 @@ class LeftAgent:
             action = np.array([0, 1, 0])
         else:
             action = np.array([0, 0, 0])
-
-
-        print(f"Left Agent Step: {self.__step}, Action: {action}")
-
         return action
 
     def pattern_still(self):
