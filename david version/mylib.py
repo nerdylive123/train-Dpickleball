@@ -147,9 +147,10 @@ class SharedObsUnityGymWrapper(Env):
 
         # Store the reward for episode tracking
         self._last_reward = reward_diff
-
+        if (rewards[self.agent] + rewards[self.agent_other]) > 0:
+            print(f"🎯 Rewards this step - Right: {rewards[self.agent]:.3f}, Left: {rewards[self.agent_other]:.3f}")
         # Return reward difference (what the training agent receives)
-        return stacked_obs, reward_diff, game_ended, False, infos[self.agent]
+        return stacked_obs, rewards[self.agent], game_ended, False, infos[self.agent]
 
     def render(self):
         return self.env.render()
@@ -164,12 +165,17 @@ class CustomCNN(BaseFeaturesExtractor):
         n_input_channels = observation_space.shape[0]  # typically 4 for stacked frames
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU(),
+            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((4, 4)),
             nn.Flatten()
         )
 
@@ -179,11 +185,78 @@ class CustomCNN(BaseFeaturesExtractor):
             sample_output = self.cnn(sample_input)
             cnn_output_dim = sample_output.shape[1]
 
-        # Final linear layer to get to desired features_dim
+        # Final linear layers to get to desired features_dim
         self.linear = nn.Sequential(
-            nn.Linear(cnn_output_dim, features_dim),
-            nn.ReLU()
+            nn.Linear(cnn_output_dim, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.2),
+            nn.Linear(1024, features_dim),
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         return self.linear(self.cnn(observations))
+
+
+class FastCNN(BaseFeaturesExtractor):
+    """
+    Lightweight CNN optimized for low latency.
+    - Fewer channels and layers
+    - Aggressive strides to downsample early
+    - Optional channels-last and mixed precision for CUDA
+    """
+    def __init__(self, observation_space, features_dim=256, use_amp=True, use_channels_last=True):
+        super().__init__(observation_space, features_dim)
+        self.use_amp = use_amp and torch.cuda.is_available()
+        self.use_channels_last = use_channels_last
+        n_input_channels = observation_space.shape[0]
+
+        # Compact CNN
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=2, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((4, 4)),
+            nn.Flatten(),
+        )
+
+        # Determine flattened size
+        with torch.no_grad():
+            sample = torch.zeros(1, *observation_space.shape)
+            if self.use_channels_last:
+                sample = sample.to(memory_format=torch.channels_last)
+            out = self.cnn(sample)
+            flat_dim = out.shape[1]
+
+        # Smaller head
+        self.linear = nn.Sequential(
+            nn.Linear(flat_dim, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, features_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        # Optionally set modules to channels-last for better GPU throughput
+        if self.use_channels_last:
+            for m in self.modules():
+                if isinstance(m, (nn.Conv2d, nn.ReLU, nn.AdaptiveAvgPool2d)):
+                    pass  # layers operate fine with channels-last inputs
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        x = observations
+        if self.use_channels_last:
+            x = x.to(memory_format=torch.channels_last)
+        if self.use_amp:
+            # autocast speeds up convs on GPU
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                feats = self.cnn(x)
+                feats = self.linear(feats)
+            # Project back to fp32 for downstream stability
+            return feats.float()
+        else:
+            feats = self.cnn(x)
+            feats = self.linear(feats)
+            return feats

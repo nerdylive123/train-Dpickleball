@@ -8,8 +8,20 @@ from stable_baselines3.common.callbacks import BaseCallback
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
 
 from callback.inferenceTime import InferenceTimerCallback
-from mylib import CustomCNN
-from shared_env import create_env
+from mylib import CustomCNN, FastCNN
+from shared_env import create_env, create_vectorized_env
+
+# Performance knobs for faster inference on CUDA
+try:
+    torch.backends.cudnn.benchmark = True
+    if hasattr(torch.backends, 'cuda'):
+        torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends, 'cudnn'):
+        torch.backends.cudnn.allow_tf32 = True
+    if hasattr(torch, 'set_float32_matmul_precision'):
+        torch.set_float32_matmul_precision('high')
+except Exception:
+    pass
 
 
 class SimpleEpisodeTracker(BaseCallback):
@@ -46,18 +58,20 @@ class SimpleEpisodeTracker(BaseCallback):
     def _on_step(self) -> bool:
         self.step_count += 1
 
-        # Get the current reward from the environment
-        reward = 0
+        # Get the current reward from the environment (first env if vectorized)
+        reward = 0.0
         try:
-            # Try to get reward from the VecEnv
-            if hasattr(self.training_env, 'buf_rews') and len(self.training_env.buf_rews) > 0:
-                reward = float(self.training_env.buf_rews[-1][0])
-            elif hasattr(self.training_env, 'get_attr'):
-                # Try to get from wrapped environment
-                env_rewards = self.training_env.get_attr('_last_reward')
-                if env_rewards and env_rewards[0] is not None:
-                    reward = float(env_rewards[0])
-        except:
+            if 'rewards' in self.locals:
+                r = self.locals['rewards']
+                if isinstance(r, (list, np.ndarray)) and len(r) > 0:
+                    reward = float(r[0])
+                elif isinstance(r, (float, int)):
+                    reward = float(r)
+            else:
+                vals = getattr(self.training_env, 'get_attr', lambda name: [0.0])('_last_reward')
+                if vals and vals[0] is not None:
+                    reward = float(vals[0])
+        except Exception:
             pass
 
         self.current_episode_reward += reward
@@ -66,59 +80,52 @@ class SimpleEpisodeTracker(BaseCallback):
         if abs(reward) > 0.01:
             print(f"Step {self.step_count}: Reward = {reward:.3f}, Episode Total = {self.current_episode_reward:.3f}")
 
-        # Check if episode is done
+        # Check if episode is done (first env if vectorized)
         done = False
         try:
-            if hasattr(self.training_env, 'buf_dones') and len(self.training_env.buf_dones) > 0:
-                done = bool(self.training_env.buf_dones[-1][0])
-            elif 'dones' in self.locals:
-                dones = self.locals['dones']
-                done = bool(dones[0]) if isinstance(dones, (list, np.ndarray)) else bool(dones)
-        except:
+            if 'dones' in self.locals:
+                d = self.locals['dones']
+                if isinstance(d, (list, np.ndarray)) and len(d) > 0:
+                    done = bool(d[0])
+                elif isinstance(d, (bool, np.bool_)):
+                    done = bool(d)
+        except Exception:
             pass
 
         if done:
-            # Episode finished - a game has ended (someone reached 21 points)
             self.episode_count += 1
             self.episode_rewards.append(self.current_episode_reward)
             self.reward_window.append(self.current_episode_reward)
 
-            # Calculate current mean reward
-            current_mean = np.mean(list(self.reward_window)) if len(self.reward_window) > 0 else 0.0
+            window_list = list(self.reward_window)
+            current_mean = np.mean(window_list) if len(window_list) > 0 else 0.0
 
-            # Print episode completion
             print(f"\n🏆 EPISODE {self.episode_count} COMPLETED! 🏆")
             print(f"Episode Reward: {self.current_episode_reward:.3f}")
             print(f"Mean Reward (last {len(self.reward_window)} episodes): {current_mean:.3f}")
             print(f"Total Timesteps: {self.num_timesteps}")
             print("-" * 50)
 
-            # Save to log file
             with open(self.log_file, 'a') as f:
                 f.write(f"{self.episode_count:>7} | {self.current_episode_reward:>14.3f} | {current_mean:>18.3f} | {self.num_timesteps:>9d}\n")
 
-            # Report detailed progress every N episodes
             if self.episode_count % self.check_freq == 0:
                 self._report_detailed_progress()
 
-            # Reset for next episode
             self.current_episode_reward = 0.0
 
         return True
 
     def _report_detailed_progress(self):
-        """Report detailed training progress summary"""
         if len(self.reward_window) == 0:
             return
 
-        # Calculate statistics
-        rewards_array = np.array(list(self.reward_window))
-        mean_reward = np.mean(rewards_array)
-        std_reward = np.std(rewards_array)
-        min_reward = np.min(rewards_array)
-        max_reward = np.max(rewards_array)
+        rewards_array = np.array(list(self.reward_window), dtype=np.float32)
+        mean_reward = float(np.mean(rewards_array))
+        std_reward = float(np.std(rewards_array))
+        min_reward = float(np.min(rewards_array))
+        max_reward = float(np.max(rewards_array))
 
-        # Create report
         episode_range = f"{self.episode_count - self.check_freq + 1:3d}-{self.episode_count:3d}"
 
         print("\n" + "=" * 70)
@@ -129,10 +136,9 @@ class SimpleEpisodeTracker(BaseCallback):
         print(f"Total Timesteps: {self.num_timesteps}")
         print(f"Episodes per {self.check_freq} games: {self.check_freq}")
 
-        # Check for improvement trend
         if len(self.episode_rewards) >= self.check_freq * 2:
-            prev_window = self.episode_rewards[-self.check_freq * 2:-self.check_freq]
-            prev_mean = np.mean(prev_window)
+            prev_window = list(self.episode_rewards)[-self.check_freq * 2:-self.check_freq]
+            prev_mean = float(np.mean(prev_window)) if len(prev_window) > 0 else 0.0
             improvement = mean_reward - prev_mean
             if improvement > 0.1:
                 trend = "📈 IMPROVING"
@@ -144,22 +150,19 @@ class SimpleEpisodeTracker(BaseCallback):
 
         print("=" * 70 + "\n")
 
-
-        # Save detailed JSON data
         self._save_detailed_data()
 
     def _save_detailed_data(self):
-        """Save all episode data to JSON file"""
         data = {
-            'episode_count': self.episode_count,
+            'episode_count': int(self.episode_count),
             'total_timesteps': int(self.num_timesteps),
-            'all_episode_rewards': self.episode_rewards,
+            'all_episode_rewards': list(self.episode_rewards),
             'recent_stats': {
                 'episodes': f"{self.episode_count - self.check_freq + 1}-{self.episode_count}",
-                'mean_reward': float(np.mean(self.reward_window)),
-                'std_reward': float(np.std(self.reward_window)),
-                'min_reward': float(np.min(self.reward_window)),
-                'max_reward': float(np.max(self.reward_window))
+                'mean_reward': float(np.mean(list(self.reward_window))) if len(self.reward_window) > 0 else 0.0,
+                'std_reward': float(np.std(list(self.reward_window))) if len(self.reward_window) > 0 else 0.0,
+                'min_reward': float(np.min(list(self.reward_window))) if len(self.reward_window) > 0 else 0.0,
+                'max_reward': float(np.max(list(self.reward_window))) if len(self.reward_window) > 0 else 0.0,
             }
         }
 
@@ -168,98 +171,127 @@ class SimpleEpisodeTracker(BaseCallback):
             json.dump(data, f, indent=2)
 
     def get_summary(self):
-        """Get training summary"""
         if not self.episode_rewards:
-            return "No episodes completed yet"
+            return {
+                'total_episodes': 0,
+                'overall_mean_reward': 0.0,
+                'recent_mean_reward': 0.0,
+                'improvement': 0.0,
+            }
 
         total_episodes = len(self.episode_rewards)
-        mean_reward = np.mean(self.episode_rewards)
+        mean_reward = float(np.mean(list(self.episode_rewards)))
 
-        # Get recent performance
-        recent_rewards = self.episode_rewards[-self.check_freq:] if len(
-            self.episode_rewards) >= self.check_freq else self.episode_rewards
-        recent_mean = np.mean(recent_rewards)
+        recent_rewards = list(self.episode_rewards)[-self.check_freq:] if len(self.episode_rewards) >= self.check_freq else list(self.episode_rewards)
+        recent_mean = float(np.mean(recent_rewards)) if len(recent_rewards) > 0 else 0.0
 
         return {
             'total_episodes': total_episodes,
             'overall_mean_reward': mean_reward,
             'recent_mean_reward': recent_mean,
-            'improvement': recent_mean - mean_reward if total_episodes > self.check_freq else 0
+            'improvement': recent_mean - mean_reward if total_episodes > self.check_freq else 0.0
         }
 
 
-def train_right_agent():
+def train_right_agent(n_envs=4, use_vecenv=True, low_latency=True,
+                      frame_stack=None, img_size=None, grayscale=True):
     MODEL_SAVE_PATH = "right_agent_model"
+
+    # Defaults tuned for latency when not explicitly provided
+    if frame_stack is None:
+        frame_stack = 32 if low_latency else 64
+    if img_size is None:
+        img_size = (128, 64) if low_latency else (168, 84)
 
     # Create log directory
     log_dir = "./training_logs/"
     os.makedirs(log_dir, exist_ok=True)
 
-    # 1. Create the side channels
-    string_channel = StringSideChannel()
-    channel = CustomDataChannel()
-    channel.send_data(serve=212, p1=0, p2=0)
+    # Create environment based on configuration
+    if use_vecenv and n_envs > 1:
+        print(f"🚀 Using VecEnv with {n_envs} parallel environments for faster training!")
+        env = create_vectorized_env(
+            n_envs=n_envs,
+            left_agent="predefined",
+            no_graphics=True,
+            use_subproc=True,
+            frame_stack=frame_stack,
+            img_size=img_size,
+            grayscale=grayscale,
+        )
+        n_steps_per_env = 256 if low_latency else 512
+        batch_size = 128 if low_latency else 64
+    else:
+        print("Using single environment (standard training)")
+        string_channel = StringSideChannel()
+        channel = CustomDataChannel()
+        channel.send_data(serve=212, p1=0, p2=0)
 
-    # 2. Create environment with proper side channels parameter
-    env = create_env(
-        left_agent="predefined",  # Use the predefined left agent
-        side_channels=[string_channel, channel],
-        no_graphics=False  # Show the Unity window
-    )
+        env = create_env(
+            left_agent="predefined",
+            side_channels=[string_channel, channel],
+            no_graphics=True,
+            frame_stack=frame_stack,
+            img_size=img_size,
+            grayscale=grayscale,
+        )
+        n_steps_per_env = 512 if low_latency else 1024
+        batch_size = 64 if low_latency else 32
 
-    # 3. Use the custom CNN features extractor
+    # Choose features extractor
+    if low_latency:
+        features_extractor_class = FastCNN
+        features_extractor_kwargs = dict(features_dim=256, use_amp=True, use_channels_last=True)
+        net_arch = [128]
+    else:
+        features_extractor_class = CustomCNN
+        features_extractor_kwargs = dict(features_dim=512)
+        net_arch = [256, 256]
+
     policy_kwargs = dict(
-        features_extractor_class=CustomCNN,
-        features_extractor_kwargs=dict(features_dim=512),
+        features_extractor_class=features_extractor_class,
+        features_extractor_kwargs=features_extractor_kwargs,
+        net_arch=net_arch,
     )
 
-    # 4. Improved PPO hyperparameters for better learning
     model = PPO(
         env=env,
         policy="CnnPolicy",
         policy_kwargs=policy_kwargs,
         verbose=1,
-        n_steps=1024, #modifies from 1024
-        batch_size=32, #modified from 64
-        n_epochs=10,
+        n_steps=n_steps_per_env,
+        batch_size=batch_size,
+        n_epochs=5 if low_latency else 10,
         gamma=0.995,
         gae_lambda=0.95,
         clip_range=0.2,
-        ent_coef=0.01,
+        ent_coef=0.005 if low_latency else 0.01,
         learning_rate=3e-4,
+        device="cuda" if torch.cuda.is_available() else "auto",
     )
 
-    # 5. Create episode tracker with more frequent reporting
-    episode_tracker = SimpleEpisodeTracker(
-        check_freq=10,  # Report every 10 episodes for better monitoring
-        log_dir=log_dir,
-        verbose=1
-    )
-
-    infTime = InferenceTimerCallback()
+    episode_tracker = SimpleEpisodeTracker(check_freq=10, log_dir=log_dir, verbose=1)
+    infTime = InferenceTimerCallback(target_ms=10, window=2000, verbose=1)
 
     print(f"Starting training on device: {model.device}")
-    print("Improved hyperparameters for better learning:")
+    if use_vecenv and n_envs > 1:
+        print(f"🔥 VECTORIZED TRAINING with {n_envs} environments:")
+        print(f"- Total steps per update: {n_steps_per_env * n_envs}")
+        print(f"- Steps per environment: {n_steps_per_env}")
+    print("Training hyperparameters:")
     print(f"- n_steps: {model.n_steps}")
     print(f"- batch_size: {model.batch_size}")
     print(f"- n_epochs: {model.n_epochs}")
     print(f"- learning_rate: {model.learning_rate}")
     print(f"- clip_range: {model.clip_range}")
     print(f"- ent_coef: {model.ent_coef}")
-    print("Episode reward tracking enabled with frequent reporting")
+    print(f"- frame_stack: {frame_stack}, img_size: {img_size}, grayscale: {grayscale}")
+    print(f"- Features: {features_extractor_class.__name__}, net_arch: {net_arch}")
 
     try:
-        # Train with episode tracking and progress callback
-        model.learn(
-            total_timesteps=500_000,  # Reduced for faster testing
-            callback=[episode_tracker, infTime],
-            progress_bar=True  # Show progress bar
-        )
-
-        # Save model
+        model.learn(total_timesteps=500_000, callback=[episode_tracker, infTime], progress_bar=True)
         model.save(MODEL_SAVE_PATH)
 
-        # Print final summary
         summary = episode_tracker.get_summary()
         print("\n" + "=" * 50)
         print("TRAINING COMPLETE")
