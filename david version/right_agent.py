@@ -6,6 +6,7 @@ from mlagents_envs.environment import UnityEnvironment
 from mylib import SharedObsUnityGymWrapper
 from custom_cnn import CustomCNN
 from shared_env import create_env
+from callback.inferenceTime import InferenceTimerCallback
 
 def train_right_agent():
     MODEL_SAVE_PATH = "right_agent_model"
@@ -48,10 +49,10 @@ def train_right_agent():
         learning_rate=3e-4,
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
-
+    timer_cb = InferenceTimerCallback(target_ms=10.0, window=5000, verbose=1)
     print(f"Starting training on device: {model.device}")
     try:
-        model.learn(total_timesteps=1_000_000)
+        model.learn(total_timesteps=1_000_000, callback=timer_cb)
         model.save(MODEL_SAVE_PATH)
         print("Right agent training complete.")
     finally:

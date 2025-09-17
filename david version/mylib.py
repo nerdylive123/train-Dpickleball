@@ -11,7 +11,7 @@ from mlagents_envs.envs.unity_parallel_env import UnityParallelEnv
 from gym.spaces import Tuple as GymTuple
 
 class SharedObsUnityGymWrapper(Env):
-    def __init__(self, unity_env, frame_stack=14, img_size=(168, 84), grayscale=True, left_agent=None):
+    def __init__(self, unity_env, frame_stack=20, img_size=(168, 84), grayscale=True, left_agent=None):
         self.env = UnityParallelEnv(unity_env)
         self.agent = self.env.possible_agents[1]       # agent to be controlled (right)
         self.agent_other = self.env.possible_agents[0] # agent at opposite (left)
