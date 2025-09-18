@@ -18,7 +18,7 @@ def main():
 
     # Example 3: 4 parallel environments (recommended)
     print("3. Training with 4 parallel environments (RECOMMENDED):")
-    train_right_agent(n_envs=4, use_vecenv=True)
+    train_right_agent(n_envs=2, use_vecenv=True)
 
     # Example 4: 8 parallel environments (for powerful machines)
     print("4. Training with 8 parallel environments (for powerful machines):")

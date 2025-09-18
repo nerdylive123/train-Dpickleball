@@ -193,7 +193,7 @@ class SimpleEpisodeTracker(BaseCallback):
         }
 
 
-def train_right_agent(n_envs=4, use_vecenv=True, low_latency=True,
+def train_right_agent(n_envs=4, use_vecenv=True, low_latency=False,
                       frame_stack=None, img_size=None, grayscale=True):
     MODEL_SAVE_PATH = "right_agent_model"
 
@@ -258,7 +258,7 @@ def train_right_agent(n_envs=4, use_vecenv=True, low_latency=True,
         env=env,
         policy="CnnPolicy",
         policy_kwargs=policy_kwargs,
-        verbose=1,
+        verbose=2,
         n_steps=n_steps_per_env,
         batch_size=batch_size,
         n_epochs=5 if low_latency else 10,
