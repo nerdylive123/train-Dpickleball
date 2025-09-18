@@ -15,9 +15,9 @@ class LeftAgent:
             self.__step += 1
         return action
 
-    def pattern_simple(self):
+    def pattern_simple_right(self):
         self.__step += 1
-        return [0, 1, 0]
+        return [0, 1, 0] #just keep moving right until the middle of the field
 
     def pattern_simple2(self):
         # move left [0,2,0] for 10 steps then next should be stop [0,0,0] for 60 steps then
@@ -43,7 +43,7 @@ class LeftAgent:
 
 
     def act(self, observation):
-        return self.pattern_simple2()
+        return self.pattern_simple_right()
 
     def reset(self):
         self.time_elapsed = 0
