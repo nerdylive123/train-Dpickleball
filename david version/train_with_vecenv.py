@@ -25,14 +25,6 @@ def main():
     # train_right_agent(n_envs=8, use_vecenv=True)
 
 if __name__ == "__main__":
-    print("🚀 Starting VecEnv Training!")
-    print("This will use 4 parallel environments for faster training.")
-    print("Each environment runs independently, collecting experiences in parallel.")
-    print("Expected benefits:")
-    print("- 4x faster data collection")
-    print("- More diverse experiences per update")
-    print("- Better sample efficiency")
-    print("- Faster convergence")
     print("\nStarting training...\n")
 
     main()
