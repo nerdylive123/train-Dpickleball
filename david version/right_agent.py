@@ -3,25 +3,25 @@ import numpy as np
 import os
 import json
 from collections import deque
-from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import BaseCallback
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
 
 from callback.inferenceTime import InferenceTimerCallback
-from mylib import CustomCNN, FastCNN
+from mylib import PickleballCNN, ImprovedPickleballCNN
 from shared_env import create_env, create_vectorized_env
 
 # Performance knobs for faster inference on CUDA
-try:
-    torch.backends.cudnn.benchmark = True
-    if hasattr(torch.backends, 'cuda'):
-        torch.backends.cuda.matmul.allow_tf32 = True
-    if hasattr(torch.backends, 'cudnn'):
-        torch.backends.cudnn.allow_tf32 = True
-    if hasattr(torch, 'set_float32_matmul_precision'):
-        torch.set_float32_matmul_precision('high')
-except Exception:
-    pass
+# try:
+#     torch.backends.cudnn.benchmark = True
+#     if hasattr(torch.backends, 'cuda'):
+#         torch.backends.cuda.matmul.allow_tf32 = True
+#     if hasattr(torch.backends, 'cudnn'):
+#         torch.backends.cudnn.allow_tf32 = True
+#     if hasattr(torch, 'set_float32_matmul_precision'):
+#         torch.set_float32_matmul_precision('high')
+# except Exception:
+#     pass
 
 
 class SimpleEpisodeTracker(BaseCallback):
@@ -78,7 +78,7 @@ class SimpleEpisodeTracker(BaseCallback):
 
         # Print step rewards for debugging
         if abs(reward) > 0.01:
-            print(f"Step {self.step_count}: Reward = {reward:.3f}, Episode Total = {self.current_episode_reward:.3f}")
+            print(f"Step {self.step_count}: Reward = {reward:.3f}, Episode Reward = {self.current_episode_reward:.3f}")
 
         # Check if episode is done (first env if vectorized)
         done = False
@@ -193,15 +193,16 @@ class SimpleEpisodeTracker(BaseCallback):
         }
 
 
-def train_right_agent(n_envs=4, use_vecenv=True, low_latency=False,
+def train_right_agent(n_envs=2, use_vecenv=True, low_latency=False,
                       frame_stack=None, img_size=None, grayscale=True):
     MODEL_SAVE_PATH = "right_agent_model"
 
     # Defaults tuned for latency when not explicitly provided
     if frame_stack is None:
-        frame_stack = 32 if low_latency else 64
+        frame_stack = 6 if low_latency else 8
     if img_size is None:
-        img_size = (128, 64) if low_latency else (168, 84)
+        # Updated for better pickleball gameplay with spin detection
+        img_size = (192, 108) if low_latency else (256, 144)  # 16:9 aspect ratio, better resolution
 
     # Create log directory
     log_dir = "./training_logs/"
@@ -240,13 +241,19 @@ def train_right_agent(n_envs=4, use_vecenv=True, low_latency=False,
 
     # Choose features extractor
     if low_latency:
-        features_extractor_class = FastCNN
+        features_extractor_class = PickleballCNN
         features_extractor_kwargs = dict(features_dim=256, use_amp=True, use_channels_last=True)
         net_arch = [128]
     else:
-        features_extractor_class = CustomCNN
-        features_extractor_kwargs = dict(features_dim=512)
-        net_arch = [256, 256]
+        # Use ImprovedPickleballCNN for better parameter efficiency
+        features_extractor_class = ImprovedPickleballCNN
+        features_extractor_kwargs = dict(
+            features_dim=384,
+            use_amp=True,
+            use_temporal_compression=True,
+            use_batchnorm=True
+        )
+        net_arch = [256]  # Smaller since CNN head is already efficient
 
     policy_kwargs = dict(
         features_extractor_class=features_extractor_class,
@@ -254,9 +261,9 @@ def train_right_agent(n_envs=4, use_vecenv=True, low_latency=False,
         net_arch=net_arch,
     )
 
-    model = PPO(
+    model = RecurrentPPO(
         env=env,
-        policy="CnnPolicy",
+        policy="CnnLstmPolicy",
         policy_kwargs=policy_kwargs,
         verbose=2,
         n_steps=n_steps_per_env,
@@ -265,7 +272,7 @@ def train_right_agent(n_envs=4, use_vecenv=True, low_latency=False,
         gamma=0.995,
         gae_lambda=0.95,
         clip_range=0.2,
-        ent_coef=0.005 if low_latency else 0.01,
+        ent_coef=0.05 if low_latency else 0.01,
         learning_rate=3e-4,
         device="cuda" if torch.cuda.is_available() else "auto",
     )
