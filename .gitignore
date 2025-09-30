@@ -1,3 +1,4 @@
 /runs/*
 /david version/training_logs/
 /.idea/*
+!/CompabilityTesting/right_agent_*.zip
