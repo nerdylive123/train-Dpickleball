@@ -6,9 +6,13 @@ Interactive demo to load and watch a saved model in action
 import os
 import time
 import torch
-from stable_baselines3 import PPO
+import zipfile
+from sb3_contrib import RecurrentPPO
+
+from davidversion.custom_cnn import CustomCNN
 from shared_env import create_env, create_vectorized_env
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
+from mylib import PickleballCNN, ImprovedPickleballCNN
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def find_saved_model():
@@ -40,9 +44,105 @@ def find_saved_model():
     return model_files[0]  # Return the newest
 
 
+def get_model_env_params_from_metadata(model_path):
+    """Extract environment parameters from saved model metadata without loading the full model"""
+    try:
+        # Try to extract metadata from the zip file
+        with zipfile.ZipFile(model_path, 'r') as zip_ref:
+            # List contents to see what's available
+            file_list = zip_ref.namelist()
+            print(f"📋 Model archive contents: {file_list}")
+
+            # Look for system_info.txt which contains environment info
+            if 'system_info.txt' in file_list:
+                with zip_ref.open('system_info.txt') as f:
+                    system_info = f.read().decode('utf-8')
+                    print(f"📄 System info found in model")
+
+        # Default parameters that work with most models
+        # These are common configurations that should be compatible
+        default_params = {
+            'frame_stack': 64,  # Common default
+            'img_size': (168, 84),  # Standard size
+            'grayscale': True,
+        }
+
+        print(f"🔧 Using default parameters: {default_params}")
+        return default_params
+
+    except Exception as e:
+        print(f"⚠️  Could not extract metadata: {e}")
+        # Fallback to safe defaults
+        return {
+            'frame_stack': 64,
+            'img_size': (168, 84),
+            'grayscale': True,
+        }
+
+
+def create_compatible_env_for_model(model_path, **env_params):
+    """Create an environment and try to load the model with different CNN architectures"""
+
+    # Try different policy configurations
+    policy_kwargs_options = [
+        # Option 1: Custom PickleballCNN
+        {
+            "features_extractor_class": CustomCNN,
+            "features_extractor_kwargs": {"features_dim": 512}
+        },
+        # Option 2: ImprovedPickleballCNN
+        {
+            "features_extractor_class": ImprovedPickleballCNN,
+            "features_extractor_kwargs": {"features_dim": 384}
+        },
+        # Option 3: Standard CNN with smaller features
+        {
+            "features_extractor_kwargs": {"features_dim": 512}
+        },
+        # Option 4: Standard CNN with default features
+        {},
+    ]
+
+    string_channel = StringSideChannel()
+    channel = CustomDataChannel()
+    channel.send_data(serve=212, p1=0, p2=0)
+
+    for i, policy_kwargs in enumerate(policy_kwargs_options):
+        try:
+            print(f"🔄 Trying policy configuration {i+1}/{len(policy_kwargs_options)}...")
+
+            # Create environment
+            env = create_env(
+                left_agent="predefined",
+                side_channels=[string_channel, channel],
+                no_graphics=True,  # Use no graphics for testing
+                **env_params
+            )
+
+            # Try to load model with this configuration
+            model = RecurrentPPO.load(
+                model_path,
+                env=env,
+                device=device,
+                policy_kwargs=policy_kwargs
+            )
+
+            print(f"✅ Successfully loaded model with configuration {i+1}!")
+            return env, model, policy_kwargs
+
+        except Exception as e:
+            print(f"❌ Configuration {i+1} failed: {str(e)[:100]}...")
+            if 'env' in locals():
+                env.close()
+            continue
+
+    # If all configurations failed, raise the last error
+    raise RuntimeError("❌ Could not load model with any policy configuration!")
+
+
 def get_model_env_params(model_path):
     """Load model and extract environment parameters from its observation space"""
-    temp_model = PPO.load(model_path, device=device)
+    temp_model = RecurrentPPO.load(model_path, device=device)
 
     obs_shape = temp_model.observation_space.shape
     print(f"📐 Model observation space: {obs_shape}")
@@ -75,12 +175,18 @@ def interactive_model_demo():
     print(f"\n🔄 Loading model: {model_name}")
 
     try:
-        # Get environment parameters from the saved model
-        print("🧠 Analyzing model observation space...")
-        env_params = get_model_env_params(model_path)
+        # Get environment parameters using the new robust method
+        print("🧠 Extracting model parameters...")
+        env_params = get_model_env_params_from_metadata(model_path)
 
-        # Create environment with matching parameters
-        print("🌍 Creating test environment...")
+        # Create environment and load model with compatible architecture
+        print("🌍 Creating compatible environment and loading model...")
+        env, model, policy_kwargs = create_compatible_env_for_model(model_path, **env_params)
+
+        # Close the test environment and create one with graphics for demo
+        env.close()
+
+        # Create environment with graphics for the actual demo
         string_channel = StringSideChannel()
         channel = CustomDataChannel()
         channel.send_data(serve=212, p1=0, p2=0)
@@ -92,13 +198,19 @@ def interactive_model_demo():
             **env_params
         )
 
-        # Load the model with the correctly configured environment
-        print("🧠 Loading model with matching environment...")
-        model = PPO.load(model_name, env=env, device=device)
+        # Load the model with the correct policy configuration
+        model = RecurrentPPO.load(
+            model_path,
+            env=env,
+            device=device,
+            policy_kwargs=policy_kwargs
+        )
+
         print(f"   ✅ Model loaded successfully!")
         print(f"   Device: {model.device}")
         print(f"   Policy: {type(model.policy).__name__}")
         print(f"   Environment observation space: {env.observation_space}")
+        print(f"   Policy configuration: {policy_kwargs}")
 
         # Interactive demo loop
         print("\n🎯 Starting interactive demo...")
@@ -191,9 +303,16 @@ def batch_inference_demo():
     print(f"🔄 Loading model for batch inference: {model_name}")
 
     try:
-        # Get environment parameters from the saved model
-        print("🧠 Analyzing model observation space...")
-        env_params = get_model_env_params(model_path)
+        # Get environment parameters using the new robust method
+        print("🧠 Extracting model parameters...")
+        env_params = get_model_env_params_from_metadata(model_path)
+
+        # Create environment and load model with compatible architecture
+        print("🌍 Creating compatible environment and loading model...")
+        env, model, policy_kwargs = create_compatible_env_for_model(model_path, **env_params)
+
+        # Close the test environment
+        env.close()
 
         # Create VecEnv with matching parameters
         print("🌍 Creating vectorized environment...")
@@ -203,11 +322,16 @@ def batch_inference_demo():
             **env_params
         )
 
-        # Load model with matching environment
-        print("🧠 Loading model into VecEnv...")
-        model = PPO.load(model_name, env=vec_env, device=device)
+        # Load model with the correct policy configuration
+        model = RecurrentPPO.load(
+            model_path,
+            env=vec_env,
+            device=device,
+            policy_kwargs=policy_kwargs
+        )
         print(f"   ✅ Model loaded for batch inference!")
         print(f"   Number of environments: {vec_env.num_envs}")
+        print(f"   Policy configuration: {policy_kwargs}")
 
         # Run batch inference
         print("\n🎯 Running batch inference demo...")
@@ -232,6 +356,8 @@ def batch_inference_demo():
 
     except Exception as e:
         print(f"❌ Batch demo failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -247,30 +373,20 @@ def model_analysis():
     model_name = model_path.replace('.zip', '')
 
     try:
-        # Get environment parameters from the saved model
-        print("🧠 Analyzing model observation space...")
-        env_params = get_model_env_params(model_path)
+        # Get environment parameters using the new robust method
+        print("🧠 Extracting model parameters...")
+        env_params = get_model_env_params_from_metadata(model_path)
 
-        # Create minimal environment for analysis
-        string_channel = StringSideChannel()
-        channel = CustomDataChannel()
-        channel.send_data(serve=212, p1=0, p2=0)
-
-        env = create_env(
-            left_agent="predefined",
-            side_channels=[string_channel, channel],
-            no_graphics=True,
-            **env_params
-        )
-
-        # Load model with matching environment
-        model = PPO.load(model_name, env=env, device=device)
+        # Create environment and load model with compatible architecture
+        print("🌍 Creating compatible environment and loading model...")
+        env, model, policy_kwargs = create_compatible_env_for_model(model_path, **env_params)
 
         print(f"📋 Model Information:")
         print(f"   Model file: {model_path}")
         print(f"   File size: {os.path.getsize(model_path) / (1024*1024):.1f} MB")
         print(f"   Device: {model.device}")
         print(f"   Policy type: {type(model.policy).__name__}")
+        print(f"   Policy configuration: {policy_kwargs}")
 
         # Analyze policy architecture
         if hasattr(model.policy, 'features_extractor'):
@@ -306,6 +422,8 @@ def model_analysis():
 
     except Exception as e:
         print(f"❌ Analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

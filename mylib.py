@@ -21,6 +21,48 @@ class SharedObsUnityGymWrapper(Env):
         self.img_size = img_size
         self.grayscale = grayscale
         self.frames = deque(maxlen=frame_stack)
+
+        # Pick the visual observation index (the one with 3D shape)
+        def _select_visual_obs_index(spaces_list):
+            vis_idx = None
+            for i, sp in enumerate(spaces_list):
+                if hasattr(sp, "shape") and len(sp.shape) == 3:
+                    vis_idx = i
+                    break
+            if vis_idx is None:
+                raise RuntimeError(
+                    f"No visual observation (H,W,C or C,H,W) found for agent {self.agent_obs}. "
+                    f"Available spaces: {[getattr(s, 'shape', None) for s in spaces_list]}"
+                )
+            return vis_idx
+
+        spaces_list = self.env.observation_spaces[self.agent_obs]
+        self.vis_idx = _select_visual_obs_index(spaces_list)
+
+        base_space = spaces_list[self.vis_idx]
+        shape = base_space.shape
+        # Decide data format
+        if len(shape) == 3 and shape[-1] in (1, 3):
+            self._data_format = "HWC"
+            h, w, c = shape
+        elif len(shape) == 3 and shape[0] in (1, 3):
+            self._data_format = "CHW"
+            c, h, w = shape
+        else:
+            raise RuntimeError(f"Unsupported visual obs shape: {shape}")
+
+        # Final obs shape after preprocessing
+        if grayscale:
+            obs_shape = (frame_stack, self.img_size[1], self.img_size[0])  # (stack, H, W)
+        else:
+            obs_shape = (frame_stack * (1 if c == 1 else 3), self.img_size[1], self.img_size[0])
+
+        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=obs_shape, dtype=np.float32)
+        self.action_space = self.env.action_spaces[self.agent]
+
+        print("✓ Wrapper initialized:")
+        print(f"  - Observation space: {self.observation_space.shape}")
+        print(f"  - Action space: {self.action_space}")
         self._np_random = None
         self.left_agent = left_agent  # Store the left agent instance
 
@@ -130,6 +172,20 @@ class SharedObsUnityGymWrapper(Env):
         # Game ends if either condition is met
         game_ended = game_ended_by_score or game_ended_by_termination
 
+        # Pick the visual observation index (the one with 3D shape)
+        def _select_visual_obs_index(spaces_list):
+            vis_idx = None
+            for i, sp in enumerate(spaces_list):
+                if hasattr(sp, "shape") and len(sp.shape) == 3:
+                    vis_idx = i
+                    break
+            if vis_idx is None:
+                raise RuntimeError(
+                    f"No visual observation (H,W,C or C,H,W) found for agent {self.agent_obs}. "
+                    f"Available spaces: {[getattr(s, 'shape', None) for s in spaces_list]}"
+                )
+            return vis_idx
+
         if game_ended:
             if game_ended_by_score:
                 winner = "Right" if self._total_score_right >= 21 else "Left"
@@ -163,32 +219,32 @@ class SharedObsUnityGymWrapper(Env):
 class CustomCNN(BaseFeaturesExtractor):
     def __init__(self, observation_space, features_dim=512):
         super().__init__(observation_space, features_dim)
-        n_input_channels = observation_space.shape[0]
+        n_input_channels = observation_space.shape[0]  # typically 4 for stacked frames
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=0),
+            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU(),
-            nn.Flatten(),
+            nn.Flatten()
         )
 
-        # Compute shape by doing one forward pass
+        # Compute the output size of CNN
         with torch.no_grad():
-            n_flatten = self.cnn(
-                torch.as_tensor(observation_space.sample()[None]).float()
-            ).shape[1]
+            sample_input = torch.zeros(1, *observation_space.shape)
+            sample_output = self.cnn(sample_input)
+            cnn_output_dim = sample_output.shape[1]
 
+        # Final linear layer to get to desired features_dim
         self.linear = nn.Sequential(
-            nn.Linear(n_flatten, features_dim),
+            nn.Linear(cnn_output_dim, features_dim),
             nn.ReLU()
         )
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         return self.linear(self.cnn(observations))
-
 
 class PickleballCNN(BaseFeaturesExtractor):
     def __init__(self, observation_space, features_dim=384, use_amp=True):
