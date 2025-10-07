@@ -292,11 +292,11 @@ def train_right_agent():
                 reset_num_timesteps=False
             )
 
-            # Save VecNormalize stats if present
-            if isinstance(env, VecNormalize):
-                vecnorm_path = "vecnormalize.pkl"
-                env.save(vecnorm_path)
-                print(f"[Gen {gen + 1}] Saved VecNormalize stats to {vecnorm_path}")
+            # # Save VecNormalize stats if present
+            # if isinstance(env, VecNormalize):
+            #     vecnorm_path = "vecnormalize.pkl"
+            #     env.save(vecnorm_path)
+            #     print(f"[Gen {gen + 1}] Saved VecNormalize stats to {vecnorm_path}")
 
             # Update cumulative steps and save generation checkpoint into pool
             cumulative_steps += timesteps_per_generation

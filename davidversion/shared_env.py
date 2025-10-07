@@ -70,5 +70,5 @@ def make_vector_env(num_envs=30, base_worker_id=1, no_graphics=True, left_agent=
 
     vec_env = VecMonitor(vec_env)
     # Apply normalization wrapper for more stable learning; clip rewards moderately
-    vec_env = VecNormalize(vec_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
+    # vec_env = VecNormalize(vec_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
     return vec_env
