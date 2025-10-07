@@ -181,11 +181,12 @@ def _find_latest_checkpoint(pool_dir: str, name_prefix: str = "right_agent") -> 
     best_path = None
     best_steps = 0
     pattern = re.compile(rf"^{re.escape(name_prefix)}_(\d+)_steps\.zip$")
-    interrupted_pattern = re.compile(rf"^{re.escape(name_prefix)}_interrupted\.zip$")
+    interrupted_pattern = re.compile(rf"^{re.escape(name_prefix)}_interruptedx\.zip$")
 
     for fname in os.listdir(pool_dir):
         # Check for interrupted checkpoint
         if interrupted_pattern.match(fname):
+            print(" Found: ", fname)
             interrupted_path = os.path.join(pool_dir, fname)
             # If we find an interrupted checkpoint, prioritize it over numbered ones
             # since it's likely the most recent
@@ -237,7 +238,7 @@ def train_right_agent():
 
         # Fresh environment each generation with dynamic opponents from the pool
         env = make_vector_env(
-            num_envs=1,
+            num_envs=5,
             no_graphics=False,
             left_agent="predefined",
             opponent_pool_dir=OPPONENT_POOL_PATH,
@@ -310,7 +311,7 @@ def train_right_agent():
 
         except KeyboardInterrupt:
             print(f"\n[Gen {gen + 1}] Training interrupted by user")
-            model.save(NAME_PREFIX + "_interrupted")
+            model.save("./opponent_pool/right_agent_interrupted.zip")
             break
         except Exception as e:
             print(f"[Gen {gen + 1}] Training failed: {e}")
