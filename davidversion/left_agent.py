@@ -65,6 +65,7 @@ class ModelLeftAgent:
         self.deterministic = deterministic
         # Expected input channels from the trained policy's observation space
         self.expected_stack = getattr(self.model.observation_space, 'shape', (1,))[0]
+        print(f"LeftAgent loaded model from {self.model_path}")
 
     def act(self, observation):
         if observation is None:
@@ -78,6 +79,7 @@ class ModelLeftAgent:
         # add batch dimension
         obs = np.expand_dims(obs, axis=0)
         action, self.state = self.model.predict(obs, state=self.state, episode_start=None, deterministic=self.deterministic)
+        print(f"LeftAgent action: {action[0]}")
         return action[0]
 
     def reset(self):

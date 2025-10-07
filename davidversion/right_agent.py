@@ -14,7 +14,7 @@ from collections import deque
 
 
 class CopyToOpponentPoolCallback(BaseCallback):
-    def __init__(self, opponent_pool_dir: str, save_freq: int = 50_000, name_prefix: str = "right_agent"):
+    def __init__(self, opponent_pool_dir: str, save_freq: int = 5_000, name_prefix: str = "right_agent"):
         super().__init__()
         self.opponent_pool_dir = opponent_pool_dir
         self.save_freq = save_freq
@@ -181,7 +181,17 @@ def _find_latest_checkpoint(pool_dir: str, name_prefix: str = "right_agent") -> 
     best_path = None
     best_steps = 0
     pattern = re.compile(rf"^{re.escape(name_prefix)}_(\d+)_steps\.zip$")
+    interrupted_pattern = re.compile(rf"^{re.escape(name_prefix)}_interrupted\.zip$")
+
     for fname in os.listdir(pool_dir):
+        # Check for interrupted checkpoint
+        if interrupted_pattern.match(fname):
+            interrupted_path = os.path.join(pool_dir, fname)
+            # If we find an interrupted checkpoint, prioritize it over numbered ones
+            # since it's likely the most recent
+            return interrupted_path, 0
+
+        # Check for numbered checkpoint
         m = pattern.match(fname)
         if not m:
             continue
@@ -300,6 +310,7 @@ def train_right_agent():
 
         except KeyboardInterrupt:
             print(f"\n[Gen {gen + 1}] Training interrupted by user")
+            model.save(NAME_PREFIX + "_interrupted")
             break
         except Exception as e:
             print(f"[Gen {gen + 1}] Training failed: {e}")
