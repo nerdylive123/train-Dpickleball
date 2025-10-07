@@ -179,7 +179,7 @@ class SharedObsUnityGymWrapper(Env):
         # Small bonus for each step without losing
         # or for keeping rally going
         if not terminations[self.agent]:
-            reward += 0.001
+            reward -= 0.001
 
         # Optional: small penalty per step to encourage ending points
         # reward -= 0.0001

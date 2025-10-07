@@ -238,7 +238,7 @@ def train_right_agent():
 
         # Fresh environment each generation with dynamic opponents from the pool
         env = make_vector_env(
-            num_envs=5,
+            num_envs=3,
             no_graphics=False,
             left_agent="predefined",
             opponent_pool_dir=OPPONENT_POOL_PATH,
