@@ -3,6 +3,7 @@ from collections import deque
 import cv2
 import os
 import torch
+import time
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 
@@ -21,7 +22,7 @@ class TeamY:
         # Resolve paths relative to this file
         base_dir = os.path.dirname(__file__)
         if model_path is None:
-            model_path = os.path.join(base_dir, "right_agent_interrupted.zip")
+            model_path = os.path.join(base_dir, "right_agent_300000_steps.zip")
         if not os.path.isabs(vec_normalize_path):
             vec_normalize_path = os.path.join(base_dir, vec_normalize_path)
 
@@ -203,19 +204,34 @@ class TeamY:
                     print(f"[DEBUG] Model observation space: {self.model.observation_space}")
                     print(f"[DEBUG] Model action space: {self.model.action_space}")
 
-                # Get action
+                # Get action with inference timer
                 # print(f"[DEBUG] About to call model.predict()...")
-                action, self.state = self.model.predict(
+
+                # Start inference timer (minimal overhead)
+                start_time = time.perf_counter()
+
+                action, self.state = self.model.policy.predict(
                     obs_batch,
                     state=self.state,
                     episode_start=episode_start,
                     deterministic=True
                 )
-                # print(f"[DEBUG] model.predict() succeeded! Action: {action}")
 
-                # Debug periodic output
+                # Stop timer immediately (minimal overhead)
+                end_time = time.perf_counter()
+
+                # Calculate inference time only for logging/checking (after critical path)
+                inference_time_ms = (end_time - start_time) * 1000
+
+                # Check threshold
+                if inference_time_ms > 10.0:
+                    print(f"⚠️ INFERENCE TIME EXCEEDED: {inference_time_ms:.2f}ms > 10ms threshold at step {self.step_count}")
+                    # raise RuntimeError(f"Inference time {inference_time_ms:.2f}ms exceeded 10ms threshold")
+
+                # Periodic logging (optimized condition)
                 if self.step_count <= 10 or self.step_count % 100 == 0:
-                    print(f"Step {self.step_count}: Action={action[0]}, Episode_start={episode_start[0]}")
+                    print(f"Step {self.step_count}: Action={action[0]}, Episode_start={episode_start[0]}, Inference time={inference_time_ms:.2f}ms")
+
 
                 return action[0]
 
