@@ -24,6 +24,13 @@ class LeftAgent:
         self.__step += 1
         return [0, 1, np.random.randint(0,3, dtype=np.int32)]  # just keep moving right until the middle of the field
 
+    def pattern_wait_stop_then_right(self):
+        self.__step += 1
+        if self.__step < 40:
+            return np.array([0, 0, 0], dtype=np.int32)  # wait for 50 steps
+        else:
+            return np.array([0, 1, 0], dtype=np.int32)  # then move right
+
     def pattern_simple2(self):
         # move left [0,2,0] for 10 steps then next should be stop [0,0,0] for 60 steps then
         # move right [0,1,0] for 10 steps then stop [0,0,0] for 50 steps
@@ -47,7 +54,7 @@ class LeftAgent:
         return np.array([0, 0, 0])
 
     def act(self, observation):
-        return self.pattern_simple_right()
+        return self.pattern_wait_stop_then_right()
 
     def reset(self):
         self.time_elapsed = 0
