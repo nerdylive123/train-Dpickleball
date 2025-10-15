@@ -18,7 +18,7 @@ class TeamX:
         # Load your checkpoint for policy network
         if model_path is None:
             # Default model path - adjust this to your trained model
-            model_path = r"right_agent_500000_steps.zip"
+            model_path = r"left_agent_600000_steps.zip"
 
         if not os.path.exists(model_path):
             print(f"Warning: Model not found at {model_path}, using fallback square movement")
@@ -27,7 +27,7 @@ class TeamX:
             try:
                 # Try loading the model without specifying policy_kwargs
                 # This will use the saved policy configuration
-                self.model = RecurrentPPO.load(model_path, device="cuda")
+                self.model = RecurrentPPO.load(model_path, device="cuda").policy
                 print(f"Successfully loaded model from {model_path}")
             except Exception as e:
                 print(f"Error loading model: {e}, using fallback square movement")
@@ -47,7 +47,8 @@ class TeamX:
         """Preprocess observation to match training format"""
         # observation comes in as (C, H, W), typically (3, H, W)
         # Convert to (H, W, C) for OpenCV processing
-        obs = observation.transpose(1, 2, 0)
+        obs = (observation * 255).astype(np.uint8)
+        obs = obs.transpose(1, 2, 0)
 
         # Resize to match training size
         obs = cv2.resize(obs, self.img_size, interpolation=cv2.INTER_AREA)
