@@ -174,15 +174,26 @@ class SharedObsUnityGymWrapper(Env):
         # ✅ IMPROVED REWARD STRUCTURE
         # Reward shaping: +1 for scoring, -1 for opponent scoring
         # Remove the 0.001 constant reward - it encourages doing nothing
-        reward = rewards[self.agent] - rewards[self.agent_other]
+        reward =  rewards[self.agent] - rewards[self.agent_other]
+
+        if terminations[self.agent] or terminations[self.agent_other]:
+            print("Episode terminated. Resetting left agent if applicable.")
+            if self.left_agent is not None and hasattr(self.left_agent, "reset"):
+                self.left_agent.reset()
 
         # Small bonus for each step without losing
         # or for keeping rally going
-        if not terminations[self.agent]:
-            reward -= 0.001
+        # if not terminations[self.agent]:
+        #     reward -= 0.001
 
         # Optional: small penalty per step to encourage ending points
-        # reward -= 0.0001
+        if abs(reward) >= 1.0:
+            print(f"Step reward: {reward:.3f}")
+            if self.left_agent is not None and hasattr(self.left_agent, "reset"):
+                self.left_agent.reset()
+        else:
+            reward -= 0.005
+
         return stacked_obs, reward, terminations[self.agent], False, infos[self.agent]
 
     def render(self):
