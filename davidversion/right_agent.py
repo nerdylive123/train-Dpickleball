@@ -310,15 +310,17 @@ def train_right_agent():
     # Training/config parameters (env-var overridable for quick tests)
     num_generations = int(os.getenv("NUM_GENERATIONS", "20"))
     timesteps_per_generation = int(os.getenv("TIMESTEPS_PER_GEN", "500000"))
-    num_envs = int(os.getenv("NUM_ENVS", "3"))
+    num_envs = int(os.getenv("NUM_ENVS", "4"))  # Changed from 3 to 4 for better divisibility
     no_graphics = os.getenv("NO_GRAPHICS", "0") not in ("0", "false", "False")
-    n_steps = int(os.getenv("N_STEPS", "192"))
-    batch_size = int(os.getenv("BATCH_SIZE", "192"))
+    n_steps = int(os.getenv("N_STEPS", "256"))  # Changed from 192 to 256 for RecurrentPPO compatibility
+    batch_size = int(os.getenv("BATCH_SIZE", "128"))  # Changed from 192 to 128 for better efficiency
 
-    # Common policy kwargs
+    # Common policy kwargs for RecurrentPPO with LSTM
     policy_kwargs = dict(
         features_extractor_class=CustomCNN,
         features_extractor_kwargs=dict(features_dim=512),
+        lstm_hidden_size=256,  # Explicit LSTM hidden size
+        n_lstm_layers=1,  # Single LSTM layer
     )
 
     cumulative_steps = 0
@@ -331,6 +333,13 @@ def train_right_agent():
     cumulative_steps = latest_steps
     print(f"[Bootstrap] latest_model_path={latest_model_path}, steps={latest_steps}")
 
+    # Validate buffer configuration for RecurrentPPO
+    rollout_size = n_steps * num_envs
+    if rollout_size % batch_size != 0:
+        print(f"WARNING: rollout_size ({rollout_size}) not divisible by batch_size ({batch_size})")
+        print(f"Adjusting batch_size to {rollout_size // 4} for compatibility")
+        batch_size = rollout_size // 4
+
     print(f"\n{'=' * 60}")
     print("TRAINING CONFIGURATION")
     print(f"{'=' * 60}")
@@ -338,7 +347,8 @@ def train_right_agent():
     print(f"Steps per generation: {timesteps_per_generation:,}")
     print(f"Starting from step: {cumulative_steps:,}")
     print(f"Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
-    print(f"n_envs: {num_envs} | n_steps: {n_steps} | batch_size: {batch_size} | rollout_size: {n_steps * num_envs}")
+    print(f"n_envs: {num_envs} | n_steps: {n_steps} | batch_size: {batch_size} | rollout_size: {rollout_size}")
+    print(f"RecurrentPPO buffer: {rollout_size} steps total, batch_size={batch_size}")
     print(f"{'=' * 60}\n")
 
     for gen in range(num_generations):
@@ -357,6 +367,7 @@ def train_right_agent():
         env = ActionNoiseVecWrapper(env, std=0.05)
 
         # Load latest model if present, else create new
+        model = None
         if latest_model_path is not None and os.path.exists(latest_model_path):
             print(f"[Gen {gen + 1}] Loading model: {latest_model_path}")
             try:
@@ -370,35 +381,22 @@ def train_right_agent():
                     },
                 )
                 print(f"[Gen {gen + 1}] Model loaded successfully, continuing from {cumulative_steps:,} steps")
-            except ValueError as e:
-                print(f"[Gen {gen + 1}] Failed to load checkpoint due to space mismatch: {e}")
+
+                # CRITICAL FIX: Delete the old rollout buffer completely
+                # The loaded buffer has stale state that breaks RecurrentPPO
+                if hasattr(model, 'rollout_buffer') and model.rollout_buffer is not None:
+                    print(f"[Gen {gen + 1}] Old buffer: size={model.rollout_buffer.buffer_size}, pos={model.rollout_buffer.pos}, full={model.rollout_buffer.full}")
+                    del model.rollout_buffer
+                    model.rollout_buffer = None
+                    print(f"[Gen {gen + 1}] Deleted stale rollout buffer")
+
+            except (ValueError, RuntimeError, AssertionError) as e:
+                print(f"[Gen {gen + 1}] Failed to load checkpoint: {e}")
                 print(f"[Gen {gen + 1}] Initializing a fresh model instead.")
-                model = RecurrentPPO(
-                    "CnnLstmPolicy",
-                    env,
-                    policy_kwargs=policy_kwargs,
-                    verbose=2,
-                    n_steps=n_steps,
-                    batch_size=batch_size,
-                    n_epochs=8,
-                    gamma=0.97,
-                    gae_lambda=0.9,
-                    vf_coef=0.8,
-                    clip_range=0.2,
-                    ent_coef=0.02,
-                    learning_rate=3e-4,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
-                )
-            # Adjust hyperparameters for resumed training or fresh init alike
-            model.n_steps = n_steps
-            model.batch_size = batch_size
-            model.n_epochs = 8
-            model.gamma = 0.97
-            model.gae_lambda = 0.9
-            model.vf_coef = 0.8
-            model.ent_coef = 0.02
-        else:
-            print(f"[Gen {gen + 1}] No existing model found. Initializing new model.")
+                model = None
+
+        if model is None:
+            print(f"[Gen {gen + 1}] Creating new RecurrentPPO model with CnnLstmPolicy")
             model = RecurrentPPO(
                 "CnnLstmPolicy",
                 env,
@@ -415,23 +413,50 @@ def train_right_agent():
                 learning_rate=3e-4,
                 device="cuda" if torch.cuda.is_available() else "cpu",
             )
+            print(f"[Gen {gen + 1}] Model created with fresh buffer")
+
+        # Ensure hyperparameters are set correctly for RecurrentPPO
+        model.n_steps = n_steps
+        model.batch_size = batch_size
+        model.n_epochs = 8
+        model.gamma = 0.97
+        model.gae_lambda = 0.9
+        model.vf_coef = 0.8
+        model.ent_coef = 0.02
+
+        # Re-assign env to ensure consistency
+        model.env = env
+
+        # CRITICAL: Recreate the rollout buffer if it's None or was deleted
+        if model.rollout_buffer is None:
+            print(f"[Gen {gen + 1}] Rollout buffer is None, recreating it...")
+            from sb3_contrib.common.recurrent.buffers import RecurrentRolloutBuffer
+
+            # Get LSTM configuration from the policy
+            n_lstm_layers = getattr(model.policy, 'n_lstm_layers', 1)
+            lstm_hidden_size = getattr(model.policy, 'lstm_hidden_size', 256)
+
+            # hidden_state_shape MUST be (n_steps, n_lstm_layers, n_envs, lstm_hidden_size)
+            # This is the full 4D shape that the buffer allocates for LSTM states
+            hidden_state_shape = (n_steps, n_lstm_layers, num_envs, lstm_hidden_size)
+
+            model.rollout_buffer = RecurrentRolloutBuffer(
+                buffer_size=n_steps,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=model.device,
+                n_envs=num_envs,
+                hidden_state_shape=hidden_state_shape,
+            )
+            print(f"[Gen {gen + 1}] Recreated buffer: size={n_steps}, n_envs={num_envs}, hidden_state_shape={hidden_state_shape}, full={model.rollout_buffer.full}")
 
         try:
             # Create callbacks for monitoring and checkpointing
-            # DISABLED FOR TESTING: early stop callback
-            # early_stop = StopOnKLCallback(
-            #     kl_threshold=0.03,
-            #     check_freq=5000,
-            #     save_on_stop=True,
-            #     save_path=os.path.join(OPPONENT_POOL_PATH, f"{NAME_PREFIX}_interrupted.zip"),
-            #     patience=1,
-            # )
             callbacks = [
                 ObservationMonitorCallback(check_freq=5000),
                 PolicyDiversityCallback(check_freq=10000, n_samples=100),
                 TrainingStatsCallback(log_freq=5000),
                 EntropyCoefScheduler(initial=0.02, final=0.01, warmup_steps=200_000),
-                # early_stop,  # DISABLED FOR TESTING
                 CopyToOpponentPoolCallback(
                     opponent_pool_dir=OPPONENT_POOL_PATH,
                     save_freq=50000,
@@ -439,7 +464,7 @@ def train_right_agent():
                 )
             ]
 
-            # Train
+            # Train - buffer is now ready
             print(f"\n[Gen {gen + 1}] Starting training for {timesteps_per_generation:,} steps...")
             model.learn(
                 total_timesteps=timesteps_per_generation,

@@ -1,6 +1,7 @@
 # shared_env.py
 import os
 import random
+import time
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecMonitor  # Added DummyVecEnv for single-env testing
 from stable_baselines3.common.vec_env import VecNormalize
 from mlagents_envs.side_channel import SideChannel
@@ -51,12 +52,13 @@ def make_vector_env(num_envs=30, base_worker_id=1, no_graphics=False, left_agent
 
     def make_thunk(rank):
         def _init():
+            time.sleep(0.5 * rank)
             string_channel = StringSideChannel()
             data_channel = CustomDataChannel()
             data_channel.send_data(serve=212, p1=0, p2=0)
             side_channels = [string_channel, data_channel]
             opponent = "opponent_pool/left_agent_600000_steps"
-            env = create_env(side_channels=side_channels, worker_id=base_worker_id + rank,
+            env = create_env(side_channels=side_channels, worker_id=base_worker_id + rank * 5,
                              no_graphics=no_graphics)
             return env
 
