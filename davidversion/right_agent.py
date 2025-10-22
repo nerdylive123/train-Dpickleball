@@ -9,6 +9,7 @@ from shared_env import make_vector_env
 from mylib import CustomCNN
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.vec_env import VecEnvWrapper
 from collections import defaultdict
 from collections import deque
 
@@ -174,6 +175,104 @@ class TrainingStatsCallback(BaseCallback):
         return True
 
 
+# New: action noise wrapper for exploration in continuous action spaces
+class ActionNoiseVecWrapper(VecEnvWrapper):
+    def __init__(self, venv, std=0.05):
+        super().__init__(venv)
+        self.std = std
+        from gymnasium import spaces  # local import to avoid global dependency
+        self._is_continuous = isinstance(self.action_space, spaces.Box)
+
+    def reset(self):
+        # Delegate to underlying env to satisfy abstract method
+        return self.venv.reset()
+
+    def step_async(self, actions):
+        if self._is_continuous:
+            noisy = actions + np.random.normal(0.0, self.std, size=np.asarray(actions).shape)
+            low, high = self.action_space.low, self.action_space.high
+            actions = np.clip(noisy, low, high)
+        return self.venv.step_async(actions)
+
+    def step_wait(self):
+        # Delegate to underlying env to satisfy abstract method
+        return self.venv.step_wait()
+
+
+# New: entropy coefficient scheduler (linear decay)
+class EntropyCoefScheduler(BaseCallback):
+    def __init__(self, initial: float = 0.02, final: float = 0.01, warmup_steps: int = 200_000):
+        super().__init__()
+        self.initial = initial
+        self.final = final
+        self.warmup_steps = warmup_steps
+
+    def _on_training_start(self) -> None:
+        self.model.ent_coef = float(self.initial)
+        print(f"[EntCoef] init={self.initial}")
+
+    def _on_step(self) -> bool:
+        # Linear schedule over warmup_steps
+        frac = min(1.0, self.num_timesteps / max(1, self.warmup_steps))
+        current = self.initial + frac * (self.final - self.initial)
+        self.model.ent_coef = float(current)
+        if self.num_timesteps % 10000 == 0:
+            print(f"[EntCoef] step={self.num_timesteps} ent_coef={current:.5f}")
+        return True
+
+
+class StopOnKLCallback(BaseCallback):
+    def __init__(self, kl_threshold: float = 0.03, check_freq: int = 5000, save_on_stop: bool = True, save_path: str | None = None, patience: int = 1):
+        super().__init__()
+        self.kl_threshold = kl_threshold
+        self.check_freq = check_freq
+        self.save_on_stop = save_on_stop
+        self.save_path = save_path
+        self.patience = patience
+        self._violations = 0
+
+    def _get_approx_kl(self):
+        logger = getattr(self.model, "logger", None)
+        if logger is None:
+            return None
+        log_dict = getattr(logger, "name_to_value", None)
+        if log_dict is None and hasattr(logger, "get_log_dict"):
+            try:
+                log_dict = logger.get_log_dict()
+            except Exception:
+                log_dict = None
+        if not isinstance(log_dict, dict):
+            return None
+        for k in ("train/approx_kl", "approx_kl", "train/kl", "kl"):
+            if k in log_dict:
+                try:
+                    return float(log_dict[k])
+                except Exception:
+                    return None
+        return None
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % max(1, self.check_freq) != 0:
+            return True
+        approx_kl = self._get_approx_kl()
+        if approx_kl is None:
+            return True
+        if approx_kl > self.kl_threshold:
+            self._violations += 1
+            print(f"[EarlyStop] approx_kl={approx_kl:.5f} > {self.kl_threshold:.5f} ({self._violations}/{self.patience})")
+            if self._violations >= self.patience:
+                if self.save_on_stop and self.save_path:
+                    try:
+                        out_path = self.save_path[:-4] if self.save_path.endswith(".zip") else self.save_path
+                        self.model.save(out_path)
+                        print(f"[EarlyStop] Saved checkpoint to {self.save_path}")
+                    except Exception as e:
+                        print(f"[EarlyStop] Failed saving checkpoint: {e}")
+                return False
+        else:
+            self._violations = 0
+        return True
+
 def _find_latest_checkpoint(pool_dir: str, name_prefix: str = "right_agent") -> tuple[str | None, int]:
     """Return (path, timestep) of the checkpoint with the highest step count, or (None, 0) if none."""
     if not os.path.isdir(pool_dir):
@@ -181,7 +280,7 @@ def _find_latest_checkpoint(pool_dir: str, name_prefix: str = "right_agent") -> 
     best_path = None
     best_steps = 0
     pattern = re.compile(rf"^{re.escape(name_prefix)}_(\d+)_steps\.zip$")
-    interrupted_pattern = re.compile(rf"^{re.escape(name_prefix)}_interruptedx\.zip$")
+    interrupted_pattern = re.compile(rf"^{re.escape(name_prefix)}_interrupted\.zip$")
 
     for fname in os.listdir(pool_dir):
         # Check for interrupted checkpoint
@@ -205,12 +304,16 @@ def _find_latest_checkpoint(pool_dir: str, name_prefix: str = "right_agent") -> 
 
 def train_right_agent():
     NAME_PREFIX = "right_agent"
-    OPPONENT_POOL_PATH = r"opponent_pool"
+    OPPONENT_POOL_PATH = r"davidversion/opponent_pool"
     os.makedirs(OPPONENT_POOL_PATH, exist_ok=True)
 
-    # Training curriculum parameters
-    num_generations = 20
-    timesteps_per_generation = 500_000
+    # Training/config parameters (env-var overridable for quick tests)
+    num_generations = int(os.getenv("NUM_GENERATIONS", "20"))
+    timesteps_per_generation = int(os.getenv("TIMESTEPS_PER_GEN", "500000"))
+    num_envs = int(os.getenv("NUM_ENVS", "3"))
+    no_graphics = os.getenv("NO_GRAPHICS", "0") not in ("0", "false", "False")
+    n_steps = int(os.getenv("N_STEPS", "192"))
+    batch_size = int(os.getenv("BATCH_SIZE", "192"))
 
     # Common policy kwargs
     policy_kwargs = dict(
@@ -220,7 +323,13 @@ def train_right_agent():
 
     cumulative_steps = 0
     latest_model_path, latest_steps = _find_latest_checkpoint(OPPONENT_POOL_PATH, NAME_PREFIX)
+    if latest_model_path is None:
+        ckpt_dir = os.path.join("davidversion", "checkpoints")
+        alt_path, alt_steps = _find_latest_checkpoint(ckpt_dir, NAME_PREFIX)
+        if alt_path is not None:
+            latest_model_path, latest_steps = alt_path, alt_steps
     cumulative_steps = latest_steps
+    print(f"[Bootstrap] latest_model_path={latest_model_path}, steps={latest_steps}")
 
     print(f"\n{'=' * 60}")
     print("TRAINING CONFIGURATION")
@@ -229,6 +338,7 @@ def train_right_agent():
     print(f"Steps per generation: {timesteps_per_generation:,}")
     print(f"Starting from step: {cumulative_steps:,}")
     print(f"Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+    print(f"n_envs: {num_envs} | n_steps: {n_steps} | batch_size: {batch_size} | rollout_size: {n_steps * num_envs}")
     print(f"{'=' * 60}\n")
 
     for gen in range(num_generations):
@@ -238,21 +348,55 @@ def train_right_agent():
 
         # Fresh environment each generation with dynamic opponents from the pool
         env = make_vector_env(
-            num_envs=3,
-            no_graphics=False,
+            num_envs=num_envs,
+            no_graphics=no_graphics,
             left_agent="predefined",
             opponent_pool_dir=OPPONENT_POOL_PATH,
         )
+        # Apply small action noise during training rollouts (continuous spaces only)
+        env = ActionNoiseVecWrapper(env, std=0.05)
 
         # Load latest model if present, else create new
         if latest_model_path is not None and os.path.exists(latest_model_path):
             print(f"[Gen {gen + 1}] Loading model: {latest_model_path}")
-            model = RecurrentPPO.load(
-                latest_model_path,
-                env=env,
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            )
-            print(f"[Gen {gen + 1}] Model loaded successfully, continuing from {cumulative_steps:,} steps")
+            try:
+                model = RecurrentPPO.load(
+                    latest_model_path,
+                    env=env,
+                    device="cuda" if torch.cuda.is_available() else "cpu",
+                    custom_objects={
+                        "observation_space": env.observation_space,
+                        "action_space": env.action_space,
+                    },
+                )
+                print(f"[Gen {gen + 1}] Model loaded successfully, continuing from {cumulative_steps:,} steps")
+            except ValueError as e:
+                print(f"[Gen {gen + 1}] Failed to load checkpoint due to space mismatch: {e}")
+                print(f"[Gen {gen + 1}] Initializing a fresh model instead.")
+                model = RecurrentPPO(
+                    "CnnLstmPolicy",
+                    env,
+                    policy_kwargs=policy_kwargs,
+                    verbose=2,
+                    n_steps=n_steps,
+                    batch_size=batch_size,
+                    n_epochs=8,
+                    gamma=0.97,
+                    gae_lambda=0.9,
+                    vf_coef=0.8,
+                    clip_range=0.2,
+                    ent_coef=0.02,
+                    learning_rate=3e-4,
+                    device="cuda" if torch.cuda.is_available() else "cpu",
+                )
+            # Adjust hyperparameters for resumed training or fresh init alike
+            model.n_steps = n_steps
+            model.batch_size = batch_size
+            model.n_epochs = 8
+            model.gamma = 0.97
+            model.gae_lambda = 0.9
+            model.vf_coef = 0.8
+            model.ent_coef = 0.02
         else:
             print(f"[Gen {gen + 1}] No existing model found. Initializing new model.")
             model = RecurrentPPO(
@@ -260,23 +404,33 @@ def train_right_agent():
                 env,
                 policy_kwargs=policy_kwargs,
                 verbose=2,
-                n_steps=1024,
-                batch_size=128,
-                n_epochs=10,
-                gamma=0.995,
-                gae_lambda=0.95,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=8,
+                gamma=0.97,
+                gae_lambda=0.9,
+                vf_coef=0.8,
                 clip_range=0.2,
-                ent_coef=0.05,  # Increased from 0.001 for more exploration
+                ent_coef=0.02,
                 learning_rate=3e-4,
                 device="cuda" if torch.cuda.is_available() else "cpu",
             )
 
         try:
             # Create callbacks for monitoring and checkpointing
+            early_stop = StopOnKLCallback(
+                kl_threshold=0.03,
+                check_freq=5000,
+                save_on_stop=True,
+                save_path=os.path.join(OPPONENT_POOL_PATH, f"{NAME_PREFIX}_interrupted.zip"),
+                patience=1,
+            )
             callbacks = [
                 ObservationMonitorCallback(check_freq=5000),
                 PolicyDiversityCallback(check_freq=10000, n_samples=100),
                 TrainingStatsCallback(log_freq=5000),
+                EntropyCoefScheduler(initial=0.02, final=0.01, warmup_steps=200_000),
+                early_stop,
                 CopyToOpponentPoolCallback(
                     opponent_pool_dir=OPPONENT_POOL_PATH,
                     save_freq=50000,
@@ -311,12 +465,21 @@ def train_right_agent():
 
         except KeyboardInterrupt:
             print(f"\n[Gen {gen + 1}] Training interrupted by user")
-            model.save("./opponent_pool/right_agent_interrupted.zip")
+            interrupted_path = os.path.join(OPPONENT_POOL_PATH, f"{NAME_PREFIX}_interrupted.zip")
+            model.save(interrupted_path[:-4])  # SB3 expects path without .zip
+            print(f"[Gen {gen + 1}] Saved interrupted checkpoint to: {interrupted_path}")
             break
         except Exception as e:
             print(f"[Gen {gen + 1}] Training failed: {e}")
             import traceback
             traceback.print_exc()
+            # Try to save an interrupted checkpoint on failure for safe recovery
+            try:
+                interrupted_path = os.path.join(OPPONENT_POOL_PATH, f"{NAME_PREFIX}_interrupted.zip")
+                model.save(interrupted_path[:-4])  # SB3 expects path without .zip
+                print(f"[Gen {gen + 1}] Saved interrupted checkpoint to: {interrupted_path}")
+            except Exception as se:
+                print(f"[Gen {gen + 1}] Failed to save interrupted checkpoint after exception: {se}")
         finally:
             env.close()
 

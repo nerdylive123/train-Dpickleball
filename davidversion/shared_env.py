@@ -8,7 +8,7 @@ from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.envs.unity_parallel_env import UnityParallelEnv  # Add missing import
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
 from mylib import SharedObsUnityGymWrapper
-from left_agent import LeftAgent, ModelLeftAgent
+from left_agent import LeftAgent, ModelLeftAgent, RobustModelLeftAgent
 
 
 def create_env(left_agent="predefined", side_channels=None, worker_id=None, no_graphics=False):
@@ -24,7 +24,9 @@ def create_env(left_agent="predefined", side_channels=None, worker_id=None, no_g
         raise RuntimeError(f"Failed to initialize UnityEnvironment with path {ENV_PATH}: {e}")
 
     if isinstance(left_agent, str) and left_agent != "predefined":
-        left_agent_instance = ModelLeftAgent(left_agent)
+        # Instantiate robust model-based left opponent
+        left_agent_instance = RobustModelLeftAgent(left_agent, 'cuda', debug=False,
+                                                   debug_dir='davidversion/debug_frames/left')
     elif left_agent == "predefined":
         left_agent_instance = LeftAgent()
     else:
@@ -33,12 +35,13 @@ def create_env(left_agent="predefined", side_channels=None, worker_id=None, no_g
     return env
 
 
-def make_vector_env(num_envs=30, base_worker_id=1, no_graphics=True, left_agent="predefined", opponent_pool_dir: str | None = None):
+def make_vector_env(num_envs=30, base_worker_id=1, no_graphics=False, left_agent="predefined", opponent_pool_dir: str |
+                                                                                                              None = None):
     # Build a list of opponent model paths if a pool directory is provided
     opponent_models = []
     if opponent_pool_dir is not None and os.path.isdir(opponent_pool_dir):
         for name in os.listdir(opponent_pool_dir):
-            if name.lower().endswith(".zip"):
+            if name.lower().endswith(".zip") and name.startswith("left_agent_"):
                 opponent_models.append(os.path.join(opponent_pool_dir, name))
 
     def pick_opponent():
@@ -52,9 +55,7 @@ def make_vector_env(num_envs=30, base_worker_id=1, no_graphics=True, left_agent=
             data_channel = CustomDataChannel()
             data_channel.send_data(serve=212, p1=0, p2=0)
             side_channels = [string_channel, data_channel]
-            # opponent = pick_opponent()
-            # env = create_env(left_agent=opponent, side_channels=side_channels, worker_id=base_worker_id + rank,
-            #                  no_graphics=no_graphics)
+            opponent = "opponent_pool/left_agent_600000_steps"
             env = create_env(side_channels=side_channels, worker_id=base_worker_id + rank,
                              no_graphics=no_graphics)
             return env
