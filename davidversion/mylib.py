@@ -1,4 +1,4 @@
-# mylib.py
+# mylib.py V2
 import os
 
 import numpy as np
@@ -36,7 +36,7 @@ class SharedObsUnityGymWrapper(Env):
     def __init__(self, unity_env, frame_stack=4, img_size=(240, 120), grayscale=True, left_agent=None):
         self.env = UnityParallelEnv(unity_env)
 
-        self._save_debug_frames = True
+        self._save_debug_frames = False
         self._debug_frame_count = 0
         self._debug_dir = "debug_frames"
         os.makedirs(self._debug_dir, exist_ok=True)
@@ -82,9 +82,9 @@ class SharedObsUnityGymWrapper(Env):
         # Ball-based dense shaping to improve recovery behavior (right-side agent)
         # These small terms give the agent directional feedback before the point ends.
         self._use_ball_shaping = True
-        self._k_side = 0.002     # penalty per step while ball remains on our (right) half
-        self._k_away = 0.015     # extra penalty if we move left while ball is behind us near right wall
-        self._k_toward = 0.005   # small reward if we move right while ball is behind us near right wall
+        self._k_side = 0.001     # penalty per step while ball remains on our (right) half (reduced)
+        self._k_away = 0.01      # penalty if we move left while ball is behind us (reduced)
+        self._k_toward = 0.015   # reward if we move right while ball is behind us (increased to encourage forward positioning)
         self._frames_on_right = 0
         self._last_ball = None
 
@@ -96,14 +96,139 @@ class SharedObsUnityGymWrapper(Env):
         self._last_paddle = None
 
         # Shaping-triggered debug overlay saving
-        self._dbg_shaping = True
+        self._dbg_shaping = False
         self._last_rgb01 = None
+
+        # Ball/paddle shaping controls and diagnostics
+        self._prev_ball = None
+        self._k_side_accum = 0.0  # accumulate k_side penalty per episode for diagnostics
+
+        # Gated move-right reward (additive bonus)
+        self._use_gated_right = True
+        self._behind_margin = 0.04
+        self._k_right_gated = 0.005
+
+        # Right-wall penalties - MORE AGGRESSIVE to prevent wall-hugging
+        self._use_wall_penalty = True
+        self._wall_start = 0.85       # start penalties earlier (was 0.92)
+        self._wall_hard = 0.95        # hard penalty threshold earlier (was 0.98)
+        self._wall_max_penalty = 0.02 # stronger penalty for being near wall (was 0.004)
+        self._k_pre_oob = 0.05        # much stronger penalty for moving right at wall (was 0.02)
+
+        # Good positioning reward - encourage staying in optimal defensive zone
+        self._use_position_reward = True
+        self._optimal_x_min = 0.65    # ideal zone is between 0.65 and 0.80
+        self._optimal_x_max = 0.80
+        self._k_good_position = 0.003  # small reward per step for being in good position
+
+        # Position debugging - save examples of good and bad positioning
+        self._dbg_position = False
+        self._dbg_position_every = 500  # save every N steps
+        self._dbg_position_max_steps = 50000  # stop after this many steps
 
     def _save_frame(self, frame, tag):
         # frame is (1,H,W) after grayscale preprocess; convert to uint8 PNG
         img = (frame* 255).astype(np.uint8)[0]
         path = os.path.join(self._debug_dir, f"{tag}_{self._debug_frame_count:04d}.png")
         cv2.imwrite(path, img)
+
+    def _save_position_debug(self):
+        """
+        Save a debug overlay showing paddle position relative to optimal zone.
+        Shows good positioning (green) vs. bad positioning (red/yellow).
+        """
+        try:
+            base = getattr(self, "_last_rgb01", None)
+            if not isinstance(base, np.ndarray):
+                return
+
+            overlay = (np.clip(base, 0.0, 1.0) * 255).astype(np.uint8)
+            h, w = overlay.shape[:2]
+
+            # Draw optimal zone boundaries
+            x_min_px = int(self._optimal_x_min * w)
+            x_max_px = int(self._optimal_x_max * w)
+            wall_start_px = int(self._wall_start * w)
+            wall_hard_px = int(self._wall_hard * w)
+
+            # Draw vertical lines for zones
+            cv2.line(overlay, (x_min_px, 0), (x_min_px, h), (0, 255, 0), 2)  # optimal zone start (green)
+            cv2.line(overlay, (x_max_px, 0), (x_max_px, h), (0, 255, 0), 2)  # optimal zone end (green)
+            cv2.line(overlay, (wall_start_px, 0), (wall_start_px, h), (0, 165, 255), 2)  # wall warning (orange)
+            cv2.line(overlay, (wall_hard_px, 0), (wall_hard_px, h), (0, 0, 255), 2)  # wall danger (red)
+
+            # Semi-transparent optimal zone highlight
+            zone_overlay = overlay.copy()
+            cv2.rectangle(zone_overlay, (x_min_px, 0), (x_max_px, h), (0, 255, 0), -1)
+            cv2.addWeighted(overlay, 0.9, zone_overlay, 0.1, 0, overlay)
+
+            # Draw paddle position and ball
+            x_p = None
+            status = "UNKNOWN"
+            color = (200, 200, 200)
+
+            if getattr(self, "_last_paddle", None) is not None:
+                x_p, y_p = self._last_paddle
+                paddle_px = int(x_p * w)
+                paddle_py = int(y_p * h)
+
+                # Determine status
+                if self._optimal_x_min <= x_p <= self._optimal_x_max:
+                    status = "OPTIMAL"
+                    color = (0, 255, 0)  # green
+                elif x_p > self._wall_hard:
+                    status = "DANGER"
+                    color = (0, 0, 255)  # red
+                elif x_p > self._wall_start:
+                    status = "WARNING"
+                    color = (0, 165, 255)  # orange
+                elif x_p > self._optimal_x_max:
+                    status = "TOO_FAR_RIGHT"
+                    color = (0, 255, 255)  # yellow
+                else:
+                    status = "TOO_FAR_LEFT"
+                    color = (255, 0, 255)  # magenta
+
+                # Draw paddle with status color
+                cv2.circle(overlay, (paddle_px, paddle_py), 8, color, -1)
+                cv2.circle(overlay, (paddle_px, paddle_py), 10, (255, 255, 255), 2)
+
+            # Draw ball
+            if getattr(self, "_last_ball", None) is not None:
+                x_b, y_b = self._last_ball
+                ball_px = int(x_b * w)
+                ball_py = int(y_b * h)
+                cv2.circle(overlay, (ball_px, ball_py), 6, (0, 255, 255), -1)
+                cv2.circle(overlay, (ball_px, ball_py), 8, (255, 255, 255), 2)
+
+            # Add text annotations
+            y_text = 20
+            cv2.putText(overlay, f"POSITION DEBUG - Step {self._debug_frame_count}",
+                       (5, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            y_text += 25
+
+            if x_p is not None:
+                cv2.putText(overlay, f"Paddle X: {x_p:.3f} - STATUS: {status}",
+                           (5, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
+                y_text += 20
+
+            cv2.putText(overlay, f"Optimal Zone: [{self._optimal_x_min:.2f}, {self._optimal_x_max:.2f}]",
+                       (5, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            y_text += 18
+            cv2.putText(overlay, f"Wall Warning: {self._wall_start:.2f}",
+                       (5, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
+            y_text += 18
+            cv2.putText(overlay, f"Wall Danger: {self._wall_hard:.2f}",
+                       (5, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+
+            # Save with status in filename
+            tag = f"position_{status.lower()}"
+            path = os.path.join(self._debug_dir, f"{tag}_{self._debug_frame_count:06d}.png")
+            cv2.imwrite(path, overlay)
+
+        except Exception as e:
+            # Don't crash training if debug saving fails
+            pass
 
     # --- Detection debugging utilities ---
     def _should_dbg_detect(self):
@@ -158,7 +283,7 @@ class SharedObsUnityGymWrapper(Env):
             cv2.putText(overlay, f"horiz_action={act_str}", (x_text, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1, cv2.LINE_AA)
             y_text += 16
 
-            for k in ("k_side", "k_away", "k_toward"):
+            for k in ("k_side", "k_away", "k_toward", "k_right_gated", "k_wall", "k_pre_oob"):
                 if k in deltas:
                     val = deltas[k]
                     cv2.putText(overlay, f"{k}:{val:+.3f}", (x_text, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 255), 1, cv2.LINE_AA)
@@ -303,7 +428,9 @@ class SharedObsUnityGymWrapper(Env):
         rgb01 = obs.copy()
         self._last_rgb01 = rgb01
         save_dbg = self._should_dbg_detect()
+        prev_ball = getattr(self, "_last_ball", None)
         self._last_ball = self._detect_ball_xy(rgb01, save_debug=save_dbg)
+        self._prev_ball = prev_ball
         if self._use_paddle_detection:
             self._last_paddle = self._detect_right_paddle_xy(rgb01, save_debug=save_dbg)
         # Combined overlay with markers
@@ -459,43 +586,107 @@ class SharedObsUnityGymWrapper(Env):
             applied = []
             deltas = {}
             total_delta = 0.0
-            # Penalize time while the ball stays on our half
+
+            # k_side per-step penalty while ball stays on our half
             if x_b > 0.5:
                 self._frames_on_right = min(self._frames_on_right + 1, 10000)
                 reward -= self._k_side
+                self._k_side_accum = getattr(self, "_k_side_accum", 0.0) + float(self._k_side)
                 applied.append("k_side")
                 deltas["k_side"] = -float(self._k_side)
                 total_delta += -float(self._k_side)
             else:
                 self._frames_on_right = 0
-            # If ball is behind us near the right wall, discourage moving left and reward moving right
+
+            # Horizontal action
             try:
                 horiz_action = int(action[1]) if hasattr(action, "__len__") else 0  # 0 none, 1 right, 2 left
             except Exception:
                 horiz_action = 0
-            if x_b > 0.8:
-                if horiz_action == 2:
-                    reward -= self._k_away
-                    applied.append("k_away")
-                    deltas["k_away"] = -float(self._k_away)
-                    total_delta += -float(self._k_away)
-                elif horiz_action == 1:
+
+            # Paddle position (for behind and wall terms)
+            x_p = None
+            if getattr(self, "_last_paddle", None) is not None:
+                x_p, _yp = self._last_paddle
+
+            # Ball horizontal velocity
+            dx_b = None
+            if getattr(self, "_prev_ball", None) is not None:
+                dx_b = x_b - self._prev_ball[0]
+
+            # Early 'behind on our half' shaping
+            if x_b > 0.5 and x_p is not None and (x_b > x_p + getattr(self, "_behind_margin", 0.04)):
+                if horiz_action == 1:
                     reward += self._k_toward
                     applied.append("k_toward")
                     deltas["k_toward"] = float(self._k_toward)
                     total_delta += float(self._k_toward)
-            # Save overlay only when shaping is applied this frame
+                elif horiz_action == 2:
+                    reward -= self._k_away
+                    applied.append("k_away")
+                    deltas["k_away"] = -float(self._k_away)
+                    total_delta += -float(self._k_away)
+
+            # Additive gated bonus when deep and incoming
+            if getattr(self, "_use_gated_right", False) and (x_b > 0.7) and (dx_b is not None and dx_b > 0) and (horiz_action == 1):
+                reward += self._k_right_gated
+                applied.append("k_right_gated")
+                deltas["k_right_gated"] = float(self._k_right_gated)
+                total_delta += float(self._k_right_gated)
+
+            # Right-wall proximity and pre-OOB penalties
+            if getattr(self, "_use_wall_penalty", False) and x_p is not None:
+                if x_p > self._wall_start:
+                    alpha = (x_p - self._wall_start) / max(1e-6, (1.0 - self._wall_start))
+                    alpha = float(np.clip(alpha, 0.0, 1.0))
+                    penalty = alpha * float(self._wall_max_penalty)
+                    if penalty > 0:
+                        reward -= penalty
+                        applied.append("k_wall")
+                        deltas["k_wall"] = -penalty
+                        total_delta += -penalty
+                if x_p > self._wall_hard and horiz_action == 1:
+                    reward -= self._k_pre_oob
+                    applied.append("k_pre_oob")
+                    deltas["k_pre_oob"] = -float(self._k_pre_oob)
+                    total_delta += -float(self._k_pre_oob)
+
+            # Good positioning reward - encourage staying in optimal defensive zone
+            if getattr(self, "_use_position_reward", False) and x_p is not None:
+                if self._optimal_x_min <= x_p <= self._optimal_x_max:
+                    reward += self._k_good_position
+                    applied.append("k_good_pos")
+                    deltas["k_good_pos"] = float(self._k_good_position)
+                    total_delta += float(self._k_good_position)
+
+            # Save overlay when any shaping applied
             if getattr(self, "_dbg_shaping", False) and len(applied) > 0:
-                ordered_tags = [t for t in ("k_side", "k_away", "k_toward") if t in applied]
+                ordered_keys = ("k_side", "k_away", "k_toward", "k_right_gated", "k_wall", "k_pre_oob", "k_good_pos")
+                ordered_tags = [t for t in ordered_keys if t in applied]
                 self._save_shaping_overlay(ordered_tags, horiz_action, deltas, total_delta)
+
+        # Periodic position debugging - save examples of good/bad positioning
+        if getattr(self, "_dbg_position", False) and self._debug_frame_count < self._dbg_position_max_steps:
+            if self._debug_frame_count % self._dbg_position_every == 0:
+                self._save_position_debug()
 
         if self._log_reward_components:
             print(f"Reward components: event={event:.3f}, done={done}, final={reward:.3f}")
 
         if done:
             print("Episode terminated. Resetting left agent if applicable.")
+            # Debugging print for k_side accumulation (to help decide tuning)
+            try:
+                ks = getattr(self, "_k_side_accum", 0.0)
+                print(f"[Shaping] k_side applies when ball on right half (x_b>0.5). "
+                      f"Episode k_side_accum={ks:.3f}. With earlier right-move incentives, this should drop; "
+                      f"adjust _k_side if needed.")
+            except Exception:
+                pass
             if self.left_agent is not None and hasattr(self.left_agent, "reset"):
                 self.left_agent.reset()
+            # Reset accumulators for next episode
+            self._k_side_accum = 0.0
 
         # Increment frame counter at end to align indices across all saves
         self._debug_frame_count += 1
