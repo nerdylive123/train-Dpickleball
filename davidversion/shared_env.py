@@ -57,9 +57,9 @@ def make_vector_env(num_envs=30, base_worker_id=1, no_graphics=False, left_agent
             data_channel = CustomDataChannel()
             data_channel.send_data(serve=212, p1=0, p2=0)
             side_channels = [string_channel, data_channel]
-            opponent = "opponent_pool/left_agent_600000_steps"
+            opponent = "predefined"
             env = create_env(side_channels=side_channels, worker_id=base_worker_id + rank * 5,
-                             no_graphics=no_graphics)
+                             no_graphics=no_graphics, left_agent=opponent)
             return env
 
         return _init
