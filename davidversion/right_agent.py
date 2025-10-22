@@ -310,7 +310,7 @@ def train_right_agent():
     # Training/config parameters (env-var overridable for quick tests)
     num_generations = int(os.getenv("NUM_GENERATIONS", "20"))
     timesteps_per_generation = int(os.getenv("TIMESTEPS_PER_GEN", "500000"))
-    num_envs = int(os.getenv("NUM_ENVS", "4"))  # Changed from 3 to 4 for better divisibility
+    num_envs = int(os.getenv("NUM_ENVS", "1"))  # Changed from 3 to 4 for better divisibility
     no_graphics = os.getenv("NO_GRAPHICS", "0") not in ("0", "false", "False")
     n_steps = int(os.getenv("N_STEPS", "256"))  # Changed from 192 to 256 for RecurrentPPO compatibility
     batch_size = int(os.getenv("BATCH_SIZE", "128"))  # Changed from 192 to 128 for better efficiency
@@ -323,7 +323,7 @@ def train_right_agent():
         n_lstm_layers=1,  # Single LSTM layer
     )
 
-    cumulative_steps = 0
+    cumulative_steps = 757344
     latest_model_path, latest_steps = _find_latest_checkpoint(OPPONENT_POOL_PATH, NAME_PREFIX)
     if latest_model_path is None:
         ckpt_dir = os.path.join("davidversion", "checkpoints")
@@ -409,7 +409,7 @@ def train_right_agent():
                 gae_lambda=0.9,
                 vf_coef=0.8,
                 clip_range=0.2,
-                ent_coef=0.02,
+                ent_coef=0.015,
                 learning_rate=3e-4,
                 device="cuda" if torch.cuda.is_available() else "cpu",
             )
@@ -422,7 +422,7 @@ def train_right_agent():
         model.gamma = 0.97
         model.gae_lambda = 0.9
         model.vf_coef = 0.8
-        model.ent_coef = 0.02
+        model.ent_coef = 0.015
 
         # Re-assign env to ensure consistency
         model.env = env
