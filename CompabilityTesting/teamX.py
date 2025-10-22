@@ -13,25 +13,41 @@ class TeamX:
         self.frame_stack = frame_stack
         self.frames = deque(maxlen=frame_stack)
         self.img_size = (168, 84)  # Target size for preprocessing
-        self.state = None  # For LSTM state
+        
+        # LSTM state management (improved from ModelLeftAgent)
+        self.lstm_states = None
+        self.episode_start = np.ones((1,), dtype=bool)
+        self.deterministic = True
 
         # Load your checkpoint for policy network
         if model_path is None:
             # Default model path - adjust this to your trained model
             model_path = r"left_agent_600000_steps.zip"
 
+        # Check for .zip extension (improved from ModelLeftAgent)
+        model_path = model_path if os.path.exists(model_path) else f"{model_path}.zip"
+        
         if not os.path.exists(model_path):
             print(f"Warning: Model not found at {model_path}, using fallback square movement")
             self.model = None
+            self.expected_shape = None
         else:
             try:
-                # Try loading the model without specifying policy_kwargs
-                # This will use the saved policy configuration
-                self.model = RecurrentPPO.load(model_path, device="cuda").policy
+                # Load full agent then extract policy (improved from ModelLeftAgent)
+                full_agent = RecurrentPPO.load(model_path, device="cuda")
+                self.model = full_agent.policy
+                self.model.set_training_mode(False)
+                
+                # Get expected observation shape from policy
+                obs_space = self.model.observation_space
+                self.expected_shape = obs_space.shape
+                
                 print(f"Successfully loaded model from {model_path}")
+                print(f"Expected observation shape: {self.expected_shape}")
             except Exception as e:
                 print(f"Error loading model: {e}, using fallback square movement")
                 self.model = None
+                self.expected_shape = None
 
         # Fallback square movement parameters
         self.square_directions = [
@@ -82,11 +98,42 @@ class TeamX:
         # Use your policy network here
         if self.model is not None:
             try:
+                # Validate and fix observation shape if needed (improved from ModelLeftAgent)
+                if self.expected_shape is not None and stacked_obs.shape != self.expected_shape:
+                    print(f"[TeamX] Warning: obs shape {stacked_obs.shape} != expected {self.expected_shape}")
+                    
+                    # Handle different cases
+                    if len(stacked_obs.shape) == 3:
+                        c, h, w = stacked_obs.shape
+                        expected_c, expected_h, expected_w = self.expected_shape
+                        
+                        # If frame stack mismatch
+                        if c != expected_c:
+                            if c > expected_c:
+                                # Take most recent frames
+                                stacked_obs = stacked_obs[-expected_c:, :, :]
+                            else:
+                                # Pad with last frame
+                                padding = np.repeat(stacked_obs[-1:, :, :], expected_c - c, axis=0)
+                                stacked_obs = np.concatenate([stacked_obs, padding], axis=0)
+                        
+                        # If spatial dimensions mismatch (shouldn't happen, but defensive)
+                        if h != expected_h or w != expected_w:
+                            print(f"[TeamX] Spatial dimension mismatch - this shouldn't happen!")
+                
                 # Add batch dimension for model prediction
                 obs_batch = np.expand_dims(stacked_obs, axis=0)  # (1, stack, H, W)
 
-                # Get action from trained model
-                action, self.state = self.model.predict(obs_batch, state=self.state, deterministic=True)
+                # Get action from trained model with improved LSTM state management
+                with np.errstate(all='ignore'):
+                    action, self.lstm_states = self.model.predict(
+                        obs_batch,
+                        state=self.lstm_states,
+                        episode_start=self.episode_start,
+                        deterministic=self.deterministic
+                    )
+                
+                self.episode_start[0] = False
                 return action[0]  # Remove batch dimension
 
             except Exception as e:
@@ -103,5 +150,6 @@ class TeamX:
     def reset(self):
         """Reset internal state"""
         self.frames.clear()
-        self.state = None
+        self.lstm_states = None
+        self.episode_start = np.ones((1,), dtype=bool)
         self.step = 0

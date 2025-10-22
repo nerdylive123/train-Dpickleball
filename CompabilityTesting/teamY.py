@@ -22,7 +22,7 @@ class TeamY:
         # Resolve paths relative to this file
         base_dir = os.path.dirname(__file__)
         if model_path is None:
-            model_path = os.path.join(base_dir, "right_agent_300000_steps.zip")
+            model_path = os.path.join(base_dir, "right_agent_interrupted.zip")
         if not os.path.isabs(vec_normalize_path):
             vec_normalize_path = os.path.join(base_dir, vec_normalize_path)
 
