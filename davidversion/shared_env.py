@@ -8,7 +8,12 @@ from mlagents_envs.side_channel import SideChannel
 from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.envs.unity_parallel_env import UnityParallelEnv  # Add missing import
 from mlagents_envs.envs.custom_side_channel import CustomDataChannel, StringSideChannel
-from mylib import SharedObsUnityGymWrapper
+try:
+    from davidversion.mylib_v2 import SharedObsUnityGymWrapper, CustomCNN
+    print("Using new modular reward system")
+except:
+    from davidversion.mylib import SharedObsUnityGymWrapper, CustomCNN
+    print("Using old reward system")
 from left_agent import LeftAgent, ModelLeftAgent, RobustModelLeftAgent
 
 
@@ -57,7 +62,7 @@ def make_vector_env(num_envs=30, base_worker_id=1, no_graphics=False, left_agent
             data_channel = CustomDataChannel()
             data_channel.send_data(serve=212, p1=0, p2=0)
             side_channels = [string_channel, data_channel]
-            opponent = "predefined"
+            opponent = "opponent_pool/left_agent_600000_steps"
             env = create_env(side_channels=side_channels, worker_id=base_worker_id + rank * 5,
                              no_graphics=no_graphics, left_agent=opponent)
             return env
