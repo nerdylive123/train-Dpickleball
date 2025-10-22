@@ -418,19 +418,20 @@ def train_right_agent():
 
         try:
             # Create callbacks for monitoring and checkpointing
-            early_stop = StopOnKLCallback(
-                kl_threshold=0.03,
-                check_freq=5000,
-                save_on_stop=True,
-                save_path=os.path.join(OPPONENT_POOL_PATH, f"{NAME_PREFIX}_interrupted.zip"),
-                patience=1,
-            )
+            # DISABLED FOR TESTING: early stop callback
+            # early_stop = StopOnKLCallback(
+            #     kl_threshold=0.03,
+            #     check_freq=5000,
+            #     save_on_stop=True,
+            #     save_path=os.path.join(OPPONENT_POOL_PATH, f"{NAME_PREFIX}_interrupted.zip"),
+            #     patience=1,
+            # )
             callbacks = [
                 ObservationMonitorCallback(check_freq=5000),
                 PolicyDiversityCallback(check_freq=10000, n_samples=100),
                 TrainingStatsCallback(log_freq=5000),
                 EntropyCoefScheduler(initial=0.02, final=0.01, warmup_steps=200_000),
-                early_stop,
+                # early_stop,  # DISABLED FOR TESTING
                 CopyToOpponentPoolCallback(
                     opponent_pool_dir=OPPONENT_POOL_PATH,
                     save_freq=50000,
