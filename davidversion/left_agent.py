@@ -83,7 +83,7 @@ class LeftAgent:
         return np.array([0, 0, 0])
 
     def act(self, observation):
-        return self.pattern_wait_stop_then_right()
+        return self.pattern_still()
 
     def reset(self):
         self.time_elapsed = 0
@@ -183,10 +183,13 @@ class RobustModelLeftAgent:
                  debug: bool = False,
                  debug_dir: str = "davidversion/debug_frames/left",
                  debug_first_n: int = 50,
-                 debug_every_k: int = 10000):
+                 debug_every_k: int = 10000,
+                 frame_stack: int = 4,
+                 img_size: tuple = (168, 84)):
         import os
         import numpy as np
         from sb3_contrib import RecurrentPPO
+        from collections import deque
 
         self.model_path = model_path if os.path.exists(model_path) else f"{model_path}.zip"
         if not os.path.exists(self.model_path):
@@ -199,6 +202,12 @@ class RobustModelLeftAgent:
         self.lstm_states = None
         self.episode_start = np.ones((1,), dtype=bool)
         self.deterministic = deterministic
+
+        # Frame stacking configuration (matching TeamX)
+        self.frame_stack = frame_stack
+        self.frames = deque(maxlen=frame_stack)
+        self.img_size = img_size  # (width, height) for cv2.resize
+
         # One-time logging flags
         self._warned_shape_once = False
         self._logged_adjust_once = False
@@ -234,62 +243,86 @@ class RobustModelLeftAgent:
                 if s < 3:
                     print(f"[RobustModelLeftAgent] Failed saving {tag}: {e}")
 
+    def _preprocess_observation(self, observation):
+        """Preprocess observation to match training format (same as TeamX)"""
+        import numpy as np
+
+        # observation comes in as (C, H, W), typically (3, H, W)
+        # Convert to (H, W, C) for OpenCV processing
+        obs = (observation * 255).astype(np.uint8)
+        obs = obs.transpose(1, 2, 0)
+
+        # Resize to match training size
+        obs = cv2.resize(obs, self.img_size, interpolation=cv2.INTER_AREA)
+
+        # Convert to grayscale
+        obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)  # (H, W)
+        obs = np.expand_dims(obs, axis=0)  # (1, H, W)
+
+        # Normalize to [0, 1]
+        obs = obs.astype(np.float32) / 255.0
+
+        return obs
+
     def act(self, observation):
         import numpy as np
 
         if observation is None:
             raise ValueError("RobustModelLeftAgent requires observation input")
 
-        obs = np.array(observation, dtype=np.float32)
+        # Preprocess the observation (matching TeamX approach)
+        processed_obs = self._preprocess_observation(observation)
 
-        # Save BEFORE adjustments
-        if obs.ndim == 3:
-            if not self._warned_shape_once:
-                print(f"[RobustModelLeftAgent] Received obs shape={obs.shape} "
-                      f"min={float(np.min(obs)):.3f} max={float(np.max(obs)):.3f}")
-                self._warned_shape_once = True
-            self._maybe_save(obs, "before")
+        # Add to frame stack
+        self.frames.append(processed_obs)
+
+        # Ensure we have enough frames for stacking
+        while len(self.frames) < self.frame_stack:
+            self.frames.append(processed_obs)  # Repeat the current frame
+
+        # Create stacked observation
+        stacked_obs = np.concatenate(list(self.frames), axis=0)  # (stack, H, W)
+
+        # Debug logging
+        if not self._warned_shape_once:
+            print(f"[RobustModelLeftAgent] Stacked obs shape={stacked_obs.shape} "
+                  f"min={float(np.min(stacked_obs)):.3f} max={float(np.max(stacked_obs)):.3f}")
+            self._warned_shape_once = True
+
+        self._maybe_save(stacked_obs, "stacked")
 
         # Validate and fix observation shape if needed
-        if obs.shape != self.expected_shape:
+        if stacked_obs.shape != self.expected_shape:
+            if not self._logged_adjust_once:
+                print(f"[RobustModelLeftAgent] Warning: obs shape {stacked_obs.shape} != expected {self.expected_shape}")
+                self._logged_adjust_once = True
+
             # Handle different cases
-            if len(obs.shape) == 3:
-                c, h, w = obs.shape
+            if len(stacked_obs.shape) == 3:
+                c, h, w = stacked_obs.shape
                 expected_c, expected_h, expected_w = self.expected_shape
 
                 # If frame stack mismatch
                 if c != expected_c:
                     if c > expected_c:
                         # Take most recent frames
-                        obs = obs[-expected_c:, :, :]
+                        stacked_obs = stacked_obs[-expected_c:, :, :]
                     else:
                         # Pad with last frame
-                        padding = np.repeat(obs[-1:, :, :], expected_c - c, axis=0)
-                        obs = np.concatenate([obs, padding], axis=0)
+                        padding = np.repeat(stacked_obs[-1:, :, :], expected_c - c, axis=0)
+                        stacked_obs = np.concatenate([stacked_obs, padding], axis=0)
 
-                # If spatial dimensions mismatch, resize to expected (H, W)
+                # If spatial dimensions mismatch (shouldn't happen, but defensive)
                 if h != expected_h or w != expected_w:
-                    # (C, H, W) -> (H, W, C) for cv2
-                    obs_hw_c = np.transpose(obs, (1, 2, 0))
-                    # Resize to (expected_w, expected_h)
-                    resized = cv2.resize(obs_hw_c, (expected_w, expected_h), interpolation=cv2.INTER_AREA)
-                    # Back to (C, H, W) as float32
-                    obs = np.transpose(resized.astype(np.float32), (2, 0, 1))
+                    print(f"[RobustModelLeftAgent] Spatial dimension mismatch - this shouldn't happen!")
 
-        # Save AFTER adjustments
-        if obs.ndim == 3:
-            if not self._logged_adjust_once:
-                print(f"[RobustModelLeftAgent] Using obs shape {obs.shape} for policy "
-                      f"min={float(np.min(obs)):.3f} max={float(np.max(obs)):.3f}")
-                self._logged_adjust_once = True
-            self._maybe_save(obs, "after")
+        # Add batch dimension for model prediction
+        obs_batch = np.expand_dims(stacked_obs, axis=0)  # (1, stack, H, W)
 
-        # Add batch dimension: (C, H, W) -> (1, C, H, W)
-        obs = np.expand_dims(obs, axis=0)
-
+        # Get action from trained model with LSTM state management
         with np.errstate(all='ignore'):
             action, self.lstm_states = self.policy.predict(
-                obs,
+                obs_batch,
                 state=self.lstm_states,
                 episode_start=self.episode_start,
                 deterministic=self.deterministic
@@ -302,6 +335,7 @@ class RobustModelLeftAgent:
 
     def reset(self):
         import numpy as np
+        self.frames.clear()
         self.lstm_states = None
         self.episode_start = np.ones((1,), dtype=bool)
         self._warned_shape_once = False
