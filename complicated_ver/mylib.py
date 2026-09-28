@@ -147,8 +147,10 @@ class SharedObsUnityGymWrapper(Env):
 
         # Store the reward for episode tracking
         self._last_reward = reward_diff
+        if (rewards[self.agent] + rewards[self.agent_other]) > 0:
+            print(f"🎯 Rewards this step - Right: {rewards[self.agent]:.3f}, Left: {rewards[self.agent_other]:.3f}")
+            print(f"🔄 Reward difference (Right - Left): {reward_diff:.3f}")
 
-        # Return reward difference (what the training agent receives)
         return stacked_obs, reward_diff, game_ended, False, infos[self.agent]
 
     def render(self):
@@ -164,12 +166,17 @@ class CustomCNN(BaseFeaturesExtractor):
         n_input_channels = observation_space.shape[0]  # typically 4 for stacked frames
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU(),
+            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((4, 4)),
             nn.Flatten()
         )
 
@@ -179,11 +186,158 @@ class CustomCNN(BaseFeaturesExtractor):
             sample_output = self.cnn(sample_input)
             cnn_output_dim = sample_output.shape[1]
 
-        # Final linear layer to get to desired features_dim
+        # Final linear layers to get to desired features_dim
         self.linear = nn.Sequential(
-            nn.Linear(cnn_output_dim, features_dim),
-            nn.ReLU()
+            nn.Linear(cnn_output_dim, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.2),
+            nn.Linear(1024, features_dim),
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         return self.linear(self.cnn(observations))
+
+
+class PickleballCNN(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim=384, use_amp=True):
+        super().__init__(observation_space, features_dim)
+        self.use_amp = use_amp and torch.cuda.is_available()
+        n_input_channels = observation_space.shape[0]
+
+        # More gradual downsampling to preserve spatial details
+        self.cnn = nn.Sequential(
+            # First layer: moderate downsampling to preserve details
+            nn.Conv2d(n_input_channels, 32, kernel_size=5, stride=2, padding=2, bias=True),
+            nn.ReLU(inplace=True),
+
+            # Second layer: extract low-level features
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+
+            # Third layer: maintain spatial resolution for detail
+            nn.Conv2d(64, 96, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+
+            # Fourth layer: slight downsampling
+            nn.Conv2d(96, 128, kernel_size=3, stride=2, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+
+            # Fifth layer: high-level features
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+
+            # Final pooling: smaller spatial size to reduce parameters
+            nn.AdaptiveAvgPool2d((4, 4)),
+            nn.Flatten(),
+        )
+
+        # Determine flattened size
+        with torch.no_grad():
+            sample = torch.zeros(1, *observation_space.shape)
+            out = self.cnn(sample)
+            flat_dim = out.shape[1]
+
+        # Much smaller and more efficient head
+        self.linear = nn.Sequential(
+            nn.Linear(flat_dim, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, features_dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        x = observations
+        if self.use_amp:
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                feats = self.cnn(x)
+                feats = self.linear(feats)
+            return feats.float()
+        else:
+            feats = self.cnn(x)
+            return self.linear(feats)
+
+
+class ImprovedPickleballCNN(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim=384, use_amp=True,
+                 use_temporal_compression=True, use_batchnorm=False):  # Disable BN by default for rollout
+        super().__init__(observation_space, features_dim)
+        self.use_amp = use_amp and torch.cuda.is_available()
+        self.use_temporal_compression = use_temporal_compression
+        self.use_batchnorm = use_batchnorm
+        n_input_channels = observation_space.shape[0]
+
+        # Disable temporal compression for small channel counts to reduce overhead
+        if use_temporal_compression and n_input_channels >= 32:
+            compressed_channels = max(16, n_input_channels // 4)
+            self.temporal_compressor = nn.Conv2d(
+                n_input_channels, compressed_channels,
+                kernel_size=1, stride=1, padding=0, bias=True  # Use bias since no BN
+            )
+            # Remove temporal BN as suggested - it's slow with small batches
+            n_input_channels = compressed_channels
+        else:
+            self.temporal_compressor = None
+
+        layers = []
+
+        layers.extend([
+            nn.Conv2d(n_input_channels, 32, kernel_size=5, stride=2, padding=2, bias=True),  # Always use bias
+            nn.ReLU(inplace=True)  # Remove BN, just use ReLU
+        ])
+
+        layers.extend([
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=True),
+            nn.ReLU(inplace=True)
+        ])
+
+        layers.extend([
+            nn.Conv2d(64, 96, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.ReLU(inplace=True)
+        ])
+
+        # Remove the heavy 96->128->96 layers as suggested
+        # This eliminates 2 conv layers and their associated overhead
+
+        # Use smaller pooling to reduce linear input size by 4x
+        layers.extend([
+            nn.AdaptiveAvgPool2d((2, 2)),  # Changed from (4,4) to (2,2)
+            nn.Flatten()
+        ])
+
+        self.cnn = nn.Sequential(*layers)
+
+        # Calculate flattened dimension
+        with torch.no_grad():
+            sample = torch.zeros(1, *observation_space.shape)
+            if self.temporal_compressor:
+                sample = self.temporal_compressor(sample)
+            out = self.cnn(sample)
+            flat_dim = out.shape[1]
+
+        # Smaller MLP as suggested: 512->256
+        self.linear = nn.Sequential(
+            nn.Linear(flat_dim, 256),  # Reduced from 512
+            nn.ReLU(inplace=True),
+            # Remove dropout for inference speed
+            nn.Linear(256, features_dim),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        x = observations
+        use_amp_now = self.use_amp and x.is_cuda and x.shape[0] >= 4
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp_now):
+            if self.temporal_compressor:
+                x = self.temporal_compressor(x)
+
+            # Main CNN processing
+            feats = self.cnn(x)
+            feats = self.linear(feats)
+
+        # Always ensure output is float32 for LSTM compatibility
+        if feats.dtype != torch.float32:
+            feats = feats.float()
+
+        return feats

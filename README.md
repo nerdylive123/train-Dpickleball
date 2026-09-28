@@ -93,7 +93,11 @@ lib/
   train_agent.py          alternative training entry point
   test_trained_agent.py   load a checkpoint and play
 CompabilityTesting/       competition harness — teamX/teamY scripts, shared-memory variants
-david version/            teammate's parallel implementation (left/right agents, callbacks)
+complicated_ver/          RecurrentPPO right-agent training, shared env, callbacks, saved-model demo
+davidversion/             reward-shaping experiments; reward_system/ is the modular reward package
+mylib.py                  standalone copy of the shaped-reward wrapper
+new_reward_system.md      design notes for the modular reward system
+reward_system_weaknesses.md  analysis of the earlier reward shaping
 PROJECT_SUMMARY.md        longer write-up of components
 ```
 
@@ -103,5 +107,6 @@ PROJECT_SUMMARY.md        longer write-up of components
   development machine. Pass your own; the default will not exist for you.
 - `CompabilityTesting/` holds the competition-format scripts, including a
   shared-memory variant used when two independently trained agents play.
-- `david version/` is a teammate's parallel take on the same problem, kept for
-  comparison rather than merged.
+- `complicated_ver/` and `davidversion/` hold the reward-shaping work: ball and
+  paddle detection from pixels, contact and out-of-bounds detection, and
+  positioning rewards layered on top of the game's sparse score reward.

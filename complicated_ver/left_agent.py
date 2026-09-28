@@ -15,9 +15,9 @@ class LeftAgent:
             self.__step += 1
         return action
 
-    def pattern_simple(self):
+    def pattern_simple_right(self):
         self.__step += 1
-        return [0, 1, 0]
+        return [0, 1, 0] #just keep moving right until the middle of the field
 
     def pattern_simple2(self):
         # move left [0,2,0] for 10 steps then next should be stop [0,0,0] for 60 steps then
@@ -37,13 +37,31 @@ class LeftAgent:
             action = np.array([0, 0, 0])
         return action
 
+    def pattern_advanced(self):
+        # Advanced pattern: Rotate, move left, stop, move right, stop
+        cycle_length = 120  # Total cycle length
+        step_in_cycle = self.step % cycle_length
+        self.step += 1
+
+        if step_in_cycle < 15:
+            action = np.array([0, 1, 1])  # Rotate clockwise
+        elif step_in_cycle < 30:
+            action = np.array([0, 2, 0])  # Move left
+        elif step_in_cycle < 60:
+            action = np.array([0, 0, 0])  # Stop
+        elif step_in_cycle < 75:
+            action = np.array([0, 1, 2])  # Move right
+        else:
+            action = np.array([0, 0, 0])  # Stop
+        return action
+
     def pattern_still(self):
         self.__step += 1
         return np.array([0, 0, 0])
 
 
     def act(self, observation):
-        return self.pattern_simple2()
+        return self.pattern_still()
 
     def reset(self):
         self.time_elapsed = 0
