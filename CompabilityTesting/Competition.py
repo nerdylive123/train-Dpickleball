@@ -22,7 +22,7 @@ channel.send_data(serve=212, p1=reward_cum[0], p2=reward_cum[1])
 
 print("Hello dPickleBall Trainer")
 
-unity_env = UnityEnvironment("/home/gsk/Desktop/build_linux/dp.x86_64", side_channels=[string_channel, channel])
+unity_env = UnityEnvironment(r"E:\DpickleBallEnv\PickleBallFinal\Pickleball_Build_Training\dp.exe", side_channels=[string_channel, channel])
 # unity_env = UnityEnvironment(None, side_channels=[string_channel, channel])
 print("environment created")
 env = UnityParallelEnv(unity_env)
